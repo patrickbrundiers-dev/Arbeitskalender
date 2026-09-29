@@ -5,10 +5,12 @@
  *   entity: calendar.<name>_dienstplan
  *   title: Dienstplan Jenny
  *   show_times: true                    # Uhrzeiten in den Tageszellen
+ *   show_legend: true                   # Legende (zugleich Palette für „Schnell eintragen“)
  *   holidays: calendar.deutschland      # Feiertagskalender (z. B. Integration „Feiertage“)
  *
  * Bedienung:
  *   Tag antippen        -> Schicht wählen, optional „bis einschließlich“ für einen Zeitraum
+ *   Kürzel in der Legende antippen -> „Schnell eintragen“: danach jeden Tag mit einem Tap setzen
  *   KW-Zelle antippen   -> Schicht für markierte Wochentage setzen oder Woche kopieren
  *   Wischen / ‹ ›       -> Monat wechseln
  */
@@ -80,7 +82,7 @@
       border: none; border-radius: 8px; padding: 6px 12px; min-height: 36px;
     }
     .icon-btn { width: 40px; padding: 6px 0; font-size: 1.2em; line-height: 1; }
-    .grid { display: grid; grid-template-columns: 2.9em repeat(7, minmax(0, 1fr)); gap: 4px; touch-action: pan-y; }
+    .grid { display: grid; grid-template-columns: 2.9em repeat(7, minmax(0, 1fr)); gap: 4px; touch-action: pan-y; grid-template-rows: auto; grid-auto-rows: 1fr; }
     .wd { text-align: center; font-size: .75em; color: var(--secondary-text-color); padding-bottom: 2px; }
     .day {
       display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 1px;
@@ -107,6 +109,17 @@
     .kw-h { font-size: .72em; font-weight: 600; }
     .kw-h.neg { color: var(--error-color, #db4437); }
     .kw-h.pos { color: var(--success-color, #43a047); }
+    ha-card.brushing { box-shadow: inset 0 0 0 2px var(--primary-color); }
+    .legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px 3px 8px; min-height: 32px;
+      border-radius: 16px; border: 2px solid transparent; font-size: .8em;
+      background: var(--secondary-background-color, rgba(127,127,127,.15));
+    }
+    .chip.on { border-color: var(--primary-color); font-weight: 700; }
+    .chip .dot { width: 10px; height: 10px; }
+    .chip small { font-size: .85em; color: var(--secondary-text-color); font-weight: 400; }
+    .summary { margin-top: 8px; font-size: .85em; color: var(--secondary-text-color); }
     .footer { margin-top: 10px; min-height: 1.3em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .status { flex: 1 1 60%; font-size: .85em; color: var(--secondary-text-color); }
     .status.error { color: var(--error-color, #db4437); }
@@ -165,6 +178,10 @@
       this._rangeEnd = "";
       this._weekDays = [true, true, true, true, true, false, false];
       this._saving = false;
+      this._brush = null; // Schnell eintragen: null = aus, "" = löschen, sonst Kürzel
+      this._pending = 0; // laufende Speichervorgänge im Schnell-Modus
+      this._queue = Promise.resolve();
+      this._paintError = "";
       this._loaded = false;
       this._status = "";
       this._statusSelectable = false;
@@ -206,7 +223,7 @@
       const stamp = state ? state.last_updated : null;
       if (first) {
         this._load();
-      } else if (stamp && stamp !== this._stamp && !this._saving) {
+      } else if (stamp && stamp !== this._stamp && !this._saving && !this._pending) {
         this._load();
       }
       this._stamp = stamp;
@@ -238,6 +255,7 @@
       const endKey = iso(days[days.length - 1]);
       try {
         const res = await this._fetch(startKey, endKey);
+        if (this._pending) return; // es wird noch gespeichert: der Abschluss lädt den aktuellen Stand selbst
         this._shifts = res.shifts || [];
         this._shiftMap = new Map(this._shifts.map((s) => [s.code.toLowerCase(), s]));
         for (const key of Object.keys(this._days)) {
@@ -311,14 +329,90 @@
       return text;
     }
 
-    // Beginn und Ende in zwei Zeilen: passt auch in schmale Zellen (Handy) ohne abgeschnitten zu werden
+    // Volle Stunden einzeilig ("6–14"), sonst Beginn/Ende in zwei Zeilen (passt auch in schmale Zellen)
     _cellTime(code) {
       const shift = this._shiftMap.get((code || "").toLowerCase());
       if (!shift || !shift.start || !shift.end) return null;
+      if (shift.start.endsWith(":00") && shift.end.endsWith(":00")) {
+        return [`${shortTime(shift.start)}–${shortTime(shift.end)}`];
+      }
       return [shortTime(shift.start), `–${shortTime(shift.end)}`];
     }
 
+    _shortSpan(shift) {
+      return shift.start && shift.end ? `${shortTime(shift.start)}–${shortTime(shift.end)}` : "";
+    }
+
+    // Stunden und Dienste des angezeigten Monats (nur aus den geladenen Tagen)
+    _monthSummary() {
+      const year = this._month.getFullYear();
+      const month = this._month.getMonth();
+      let hours = 0;
+      let work = 0;
+      let vacation = 0;
+      let missing = false;
+      for (const [key, code] of Object.entries(this._days)) {
+        const day = parseIso(key);
+        if (day.getFullYear() !== year || day.getMonth() !== month) continue;
+        const shift = this._shiftMap.get((code || "").toLowerCase());
+        if (!shift) continue;
+        if (shift.category === "work") {
+          work += 1;
+          if (shift.hours != null) hours += shift.hours;
+          else missing = true;
+        } else if (shift.category === "vacation" && day.getDay() % 6 !== 0) {
+          vacation += 1; // wie der Sensor: nur Montag bis Freitag
+        }
+      }
+      if (!work && !vacation) return "";
+      const parts = [];
+      if (work) parts.push(`${fmtH(hours)}${missing ? "*" : ""} h · ${work} ${work === 1 ? "Dienst" : "Dienste"}`);
+      if (vacation) parts.push(`${vacation} ${vacation === 1 ? "Urlaubstag" : "Urlaubstage"}`);
+      return `${MONTHS[month]}: ${parts.join(" · ")}`;
+    }
+
     // ---------------------------------------------------------------- Aktionen
+
+    _toggleBrush(code) {
+      this._brush = this._brush === code ? null : code;
+      this._status = "";
+      this._error = "";
+      this._render();
+    }
+
+    _dayTap(key) {
+      if (this._brush !== null) this._paint(key);
+      else this._openDay(key);
+    }
+
+    // Ein Tap = ein Tag. Anzeige sofort, Speichern nacheinander im Hintergrund, am Ende der echte Stand.
+    _paint(key) {
+      const code = this._brush;
+      if (code === null || this._saving || !this._loaded) return;
+      if ((this._days[key] || "") === code) return;
+      if (code) this._days[key] = code;
+      else delete this._days[key];
+      this._error = "";
+      this._status = "";
+      this._pending += 1;
+      this._render();
+      this._queue = this._queue
+        .then(() => this._hass.callService(DOMAIN, "set_shift", { date: key, shift: code }, { entity_id: this._config.entity }))
+        .catch((err) => {
+          this._paintError = (err && err.message) || "Speichern fehlgeschlagen.";
+        })
+        .then(async () => {
+          this._pending -= 1;
+          if (this._pending > 0) return;
+          const saveError = this._paintError;
+          this._paintError = "";
+          await this._load(); // zeigt den tatsächlichen Stand, auch nach einem Fehler
+          if (saveError) {
+            this._error = saveError;
+            this._render();
+          }
+        });
+    }
 
     _openDay(key) {
       if (this._saving) return;
@@ -554,6 +648,31 @@
       );
     }
 
+    _renderLegend() {
+      if (this._config.show_legend === false || !this._shifts.length) return null;
+      const chip = (code, dotStyle, label, span, title) =>
+        h(
+          "button",
+          {
+            class: `chip${this._brush === code ? " on" : ""}`,
+            "aria-pressed": this._brush === code ? "true" : "false",
+            title,
+            onclick: () => this._toggleBrush(code),
+          },
+          h("span", { class: "dot", style: dotStyle }),
+          label,
+          span ? h("small", {}, span) : null
+        );
+      return h(
+        "div",
+        { class: "legend" },
+        this._shifts.map((shift) =>
+          chip(shift.code, `background:${this._colorFor(shift.code)}`, shift.code, this._shortSpan(shift), `${shift.name} – zum Schnell-Eintragen antippen`)
+        ),
+        chip("", "background:transparent;border:2px solid var(--secondary-text-color)", "Löschen", "", "Einträge löschen – zum Schnell-Löschen antippen")
+      );
+    }
+
     _renderKw(monday) {
       const key = iso(monday);
       const stats = this._weeks[key];
@@ -625,11 +744,10 @@
           cells.push(
             h(
               "button",
-              { class: classes.join(" "), title: this._holidays[key] || null, "aria-label": label, onclick: () => this._openDay(key) },
+              { class: classes.join(" "), title: this._holidays[key] || null, "aria-label": label, onclick: () => this._dayTap(key) },
               h("span", { class: "num" }, day.getDate()),
               code ? h("span", { class: "badge", style: `background:${this._colorFor(code)}` }, code) : null,
-              time ? h("span", { class: "time" }, time[0]) : null,
-              time ? h("span", { class: "time" }, time[1]) : null
+              time ? time.map((line) => h("span", { class: "time" }, line)) : null
             )
           );
         }
@@ -655,7 +773,13 @@
         if (Math.abs(dx) > 60 && Math.abs(dy) < 40) this._go(dx < 0 ? 1 : -1);
       });
 
+      const summaryText = this._monthSummary();
       let statusText = this._error || this._status;
+      if (!statusText && this._brush !== null) {
+        statusText = this._brush
+          ? `Schnell eintragen: „${this._brush}“ – Tage antippen. Kürzel nochmal antippen zum Beenden.`
+          : "Schnell löschen – Tage antippen. „Löschen“ nochmal antippen zum Beenden.";
+      }
       if (!statusText && !this._loaded) statusText = "Lade …";
       if (!statusText && this._syncCalendar) statusText = `Termine werden auch nach ${this._syncCalendar} übertragen.`;
       const footer = h(
@@ -688,7 +812,17 @@
 
       root.append(
         h("style", {}, STYLE),
-        h("ha-card", {}, this._config.title ? h("div", { class: "title" }, this._config.title) : null, nav, grid, footer, dialog)
+        h(
+          "ha-card",
+          { class: this._brush !== null ? "brushing" : null },
+          this._config.title ? h("div", { class: "title" }, this._config.title) : null,
+          nav,
+          grid,
+          this._renderLegend(),
+          summaryText ? h("div", { class: "summary" }, summaryText) : null,
+          footer,
+          dialog
+        )
       );
 
       if (dialog) {
@@ -708,18 +842,20 @@
     { name: "entity", required: true, selector: { entity: { domain: "calendar" } } },
     { name: "title", selector: { text: {} } },
     { name: "show_times", selector: { boolean: {} } },
+    { name: "show_legend", selector: { boolean: {} } },
     { name: "holidays", selector: { entity: { domain: "calendar" } } },
   ];
   const EDITOR_LABELS = {
     entity: "Dienstplan-Kalender",
     title: "Titel (optional)",
     show_times: "Uhrzeiten in den Tagen anzeigen",
+    show_legend: "Legende anzeigen (Schnell eintragen)",
     holidays: "Feiertagskalender (optional)",
   };
 
   class DienstplanCardEditor extends HTMLElement {
     setConfig(config) {
-      this._config = { show_times: true, ...config };
+      this._config = { show_times: true, show_legend: true, ...config };
       this._render();
     }
 

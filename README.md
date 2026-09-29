@@ -3,7 +3,7 @@
 Dienste (Früh, Spät, Nacht …) pro Tag in einer Monatsansicht eintragen – daraus entstehen automatisch Kalendertermine.
 
 - **Kalender** pro Person (`calendar.<name>_dienstplan`), sichtbar im HA-Kalender
-- **Karte**: Tag antippen → Schicht wählen (auch für einen Zeitraum), Woche antippen → mehrere Tage auf einmal setzen oder Woche kopieren, Wischen wechselt den Monat, Feiertage markiert
+- **Karte**: Tag antippen → Schicht wählen (auch für einen Zeitraum), **Kürzel in der Legende antippen → „Schnell eintragen“ (ein Tap pro Tag)**, Woche antippen → mehrere Tage auf einmal setzen oder Woche kopieren, Monatssumme, Wischen wechselt den Monat, Feiertage markiert
 - **Abgleich** in einen anderen Kalender (Google, lokaler Kalender, CalDAV …); geänderte Uhrzeiten werden automatisch nachgezogen
 - **Kalender-Link (iCal)** zum Abonnieren in Google/Apple/Outlook, ohne dass Home Assistant dafür einen Kalender-Zugang braucht
 - **Stunden und Bilanz**: Wochenstunden, Soll/Ist, Urlaubstage und Resturlaub
@@ -53,10 +53,13 @@ type: custom:dienstplan-card
 entity: calendar.jenny_dienstplan
 title: Dienstplan Jenny
 show_times: true                  # optional: Uhrzeiten in den Tagen (Standard: an)
+show_legend: true                 # optional: Legende / Schnell eintragen (Standard: an)
 holidays: calendar.deutschland    # optional: Feiertagskalender
 ```
 
 - **Tag antippen:** Schicht wählen; es wird sofort gespeichert. Mit *Bis einschließlich* trägst du einen ganzen Zeitraum ein. *Kein Dienst* löscht den Eintrag.
+- **Schnell eintragen:** Unter dem Kalender steht die Legende mit allen Diensten und ihren Zeiten. Ein Kürzel antippen (Karte bekommt einen Rahmen), dann nacheinander die Tage antippen – jeder Tap setzt sofort den Dienst. *Löschen* in der Legende entfernt Einträge auf dieselbe Art. Dasselbe Kürzel nochmal antippen beendet den Modus. Passt gut, um eine Zeile vom Aushang abzutippen.
+- **Monatssumme:** unter der Legende, z. B. „September: 48 h · 6 Dienste · 2 Urlaubstage“ (Urlaub nur Mo–Fr; `*` = Dienst ohne bekannte Stunden).
 - **KW-Zelle antippen:** Wochentage markieren (Standard Mo–Fr) und eine Schicht wählen, oder die Woche aus der Vorwoche bzw. in die nächste Woche **kopieren**. Kopieren überschreibt nur Tage, an denen in der Quellwoche etwas steht, und löscht nichts.
 - **KW-Zelle:** zeigt die Wochenstunden. Mit Wochensoll: rot = Minusstunden, grün = Plus. Ein `*` bedeutet, dass ein Dienst ohne bekannte Stunden dabei ist.
 - **Wischen** (Handy) oder ‹ › wechselt den Monat.

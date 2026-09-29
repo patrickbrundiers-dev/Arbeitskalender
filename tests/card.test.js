@@ -402,6 +402,119 @@ const option = (root, label) => btn(overlay(root), (n) => n.className.includes("
     assert.ok(!btn(root(), (n) => text(n) === "Kalender-Link"), "ohne Link kein Button");
   }
 
+  // ---------- Legende, Zeitanzeige, Monatssumme
+  {
+    const { card, hass, root } = setup();
+    card.hass = hass;
+    await settle();
+    const chips = all(root()).filter((n) => /^chip( on)?$/.test(n.className));
+    assert.deepStrictEqual(chips.map((c) => text(c).replace(/\s/g, "")), ["F16:30–13", "S113:30–20", "U", "X", "Löschen"]);
+    // Monatssumme: F1 (21., 28.) + S1 (23.) = 3 Dienste à 6,5 h = 19,5 h
+    const summary = find(root(), (n) => n.className === "summary");
+    assert.strictEqual(text(summary), "September: 19,5 h · 3 Dienste");
+  }
+  {
+    const { card, hass, root } = setup({ show_legend: false });
+    card.hass = hass;
+    await settle();
+    assert.ok(!find(root(), (n) => n.className === "legend"), "Legende abschaltbar");
+  }
+  {
+    // volle Stunden einzeilig, sonst zweizeilig
+    const { card, hass, root } = setup();
+    SHIFTS.push({ code: "F", name: "Früh", start: "06:00", end: "14:00", kind: "timed", category: "work", color: null, hours: 8 });
+    hass.states["calendar.jenny"].last_updated = "1";
+    const orig = hass.callWS;
+    hass.callWS = async (m) => { const r = await orig(m); r.days["2026-09-02"] = "F"; return r; };
+    card.hass = hass;
+    await settle();
+    const lines = (label) => all(cellByLabel(root(), label)).filter((n) => n.className === "time").map((n) => text(n));
+    assert.deepStrictEqual(lines("2. September"), ["6–14"]);
+    assert.deepStrictEqual(lines("28. September"), ["6:30", "–13"]);
+    SHIFTS.pop();
+  }
+
+  // ---------- Schnell eintragen (ein Tap pro Tag)
+  {
+    const { card, hass, root, svc, server } = setup();
+    card.hass = hass;
+    await settle();
+    const chip = (label) => btn(root(), (n) => /^chip( on)?$/.test(n.className) && text(n).startsWith(label));
+    chip("S1").listeners.click();
+    assert.ok(chip("S1").className.includes("on") && chip("S1").attrs["aria-pressed"] === "true");
+    assert.ok(text(root()).includes("Schnell eintragen: „S1“"), "Hinweis sichtbar");
+    assert.strictEqual(find(root(), (n) => n.tag === "ha-card").className, "brushing");
+
+    // drei schnelle Taps hintereinander: sofort sichtbar, kein Dialog, Reihenfolge bleibt erhalten
+    cellByLabel(root(), "8. September").listeners.click();
+    cellByLabel(root(), "9. September").listeners.click();
+    cellByLabel(root(), "10. September").listeners.click();
+    assert.strictEqual(overlay(root()), undefined, "kein Dialog im Schnell-Modus");
+    assert.ok(cellByLabel(root(), "9. September, S1"), "optimistische Anzeige vor der Antwort");
+    await settle();
+    assert.deepStrictEqual(svc().map((c) => c[3]), [
+      { date: "2026-09-08", shift: "S1" },
+      { date: "2026-09-09", shift: "S1" },
+      { date: "2026-09-10", shift: "S1" },
+    ]);
+    assert.ok(svc().every((c) => c[2] === "set_shift" && c[4].entity_id === "calendar.jenny"));
+    assert.strictEqual(server["2026-09-10"], "S1");
+    assert.ok(cellByLabel(root(), "10. September, S1"));
+
+    // gleicher Dienst nochmal: nichts zu tun
+    const n = svc().length;
+    cellByLabel(root(), "10. September").listeners.click();
+    await settle();
+    assert.strictEqual(svc().length, n);
+
+    // Löschen-Modus
+    chip("Löschen").listeners.click();
+    assert.ok(text(root()).includes("Schnell löschen"));
+    cellByLabel(root(), "10. September").listeners.click();
+    await settle();
+    assert.deepStrictEqual(svc()[svc().length - 1][3], { date: "2026-09-10", shift: "" });
+    assert.ok(!cellByLabel(root(), "10. September").attrs["aria-label"].includes("S1"));
+
+    // Beenden: Chip nochmal -> normaler Dialog
+    chip("Löschen").listeners.click();
+    assert.notStrictEqual(find(root(), (n2) => n2.tag === "ha-card").className, "brushing");
+    cellByLabel(root(), "10. September").listeners.click();
+    assert.ok(overlay(root()), "wieder Dialog");
+  }
+  {
+    // Während gespeichert wird, überschreibt ein Zustandswechsel die Anzeige nicht (kein Zurückspringen)
+    const { card, hass, root, calls } = setup();
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const origSvc = hass.callService;
+    hass.callService = async (...a) => { await gate; return origSvc(...a); };
+    card.hass = hass;
+    await settle();
+    btn(root(), (n) => /^chip/.test(n.className) && text(n).startsWith("F1")).listeners.click();
+    cellByLabel(root(), "15. September").listeners.click();
+    const wsBefore = calls.filter((c) => c[0] === "ws").length;
+    card.hass = { ...hass, states: { "calendar.jenny": { last_updated: "2", attributes: { today_shift: null } } } };
+    await settle();
+    assert.strictEqual(calls.filter((c) => c[0] === "ws").length, wsBefore, "kein Nachladen während des Speicherns");
+    assert.ok(cellByLabel(root(), "15. September, F1"));
+    release();
+    await settle();
+    assert.strictEqual(calls.filter((c) => c[0] === "ws").length, wsBefore + 1, "genau ein Nachladen am Ende");
+    assert.ok(cellByLabel(root(), "15. September, F1"));
+  }
+  {
+    // Fehler: Anzeige springt auf den echten Stand zurück und die Meldung bleibt stehen
+    const { card, hass, root } = setup({}, { fail: true });
+    card.hass = hass;
+    await settle();
+    btn(root(), (n) => /^chip/.test(n.className) && text(n).startsWith("F1")).listeners.click();
+    cellByLabel(root(), "16. September").listeners.click();
+    assert.ok(cellByLabel(root(), "16. September, F1"), "erst optimistisch");
+    await settle();
+    assert.ok(!cellByLabel(root(), "16. September").attrs["aria-label"].includes("F1"), "zurückgesetzt");
+    assert.ok(text(root()).includes("Unbekannter Dienst") && find(root(), (n) => n.className === "status error"));
+  }
+
   // ---------- Editor und Stub-Konfiguration
   {
     assert.deepStrictEqual(Card.getStubConfig({ states: {} }), { entity: "calendar.dienstplan", show_times: true });
@@ -419,8 +532,8 @@ const option = (root, label) => btn(overlay(root), (n) => n.className.includes("
     editor.setConfig({ entity: "calendar.jenny" });
     const form = editor.children[0];
     assert.strictEqual(form.tag, "ha-form");
-    assert.deepStrictEqual(form.schema.map((s) => s.name), ["entity", "title", "show_times", "holidays"]);
-    assert.deepStrictEqual(form.data, { show_times: true, entity: "calendar.jenny" });
+    assert.deepStrictEqual(form.schema.map((s) => s.name), ["entity", "title", "show_times", "show_legend", "holidays"]);
+    assert.deepStrictEqual(form.data, { show_times: true, show_legend: true, entity: "calendar.jenny" });
     assert.strictEqual(form.computeLabel({ name: "holidays" }), "Feiertagskalender (optional)");
     form.listeners["value-changed"]({ detail: { value: { entity: "calendar.jenny", show_times: false } } });
     assert.deepStrictEqual(events, [{ entity: "calendar.jenny", show_times: false }]);

@@ -1,7 +1,7 @@
 """Konstanten für die Dienstplan-Integration."""
 
 DOMAIN = "dienstplan"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 CONF_NAME = "name"
 CONF_SHIFTS = "shifts"
