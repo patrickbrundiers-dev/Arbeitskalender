@@ -14,8 +14,36 @@
  *   KW-Zelle antippen   -> Schicht für markierte Wochentage setzen oder Woche kopieren
  *   Wischen / ‹ ›       -> Monat wechseln
  */
-(() => {
+// Absicherung: Scheitert der Start (egal woran), werden die Elemente trotzdem angemeldet und zeigen den Grund.
+// Ohne das meldet Home Assistant nur „Custom element doesn't exist“, und der Grund bleibt verborgen.
+(function boot(main) {
+  try {
+    main();
+  } catch (err) {
+    const reason = (err && err.message) || String(err);
+    console.error("Dienstplan-Karte: Start fehlgeschlagen", err);
+    const message = `Dienstplan-Karte konnte nicht starten: ${reason}. Bitte die Seite neu laden (Browser-Cache leeren) oder die Integration aktualisieren.`;
+    const broken = () =>
+      class extends HTMLElement {
+        setConfig() {}
+        set hass(_hass) {}
+        getCardSize() {
+          return 2;
+        }
+        connectedCallback() {
+          this.style.cssText = "display:block;padding:16px;color:var(--error-color,#db4437)";
+          this.textContent = message;
+        }
+      };
+    for (const tag of ["dienstplan-card", "dienstplan-card-editor", "dienstplan-panel"]) {
+      if (!customElements.get(tag)) customElements.define(tag, broken());
+    }
+  }
+})(() => {
   const DOMAIN = "dienstplan";
+  // Muss zur Version der Integration passen (const.py); die Integration meldet ihre Version bei jedem Laden
+  // mit, und bei Abweichung zeigt die Karte einen Hinweis samt Knopf zum Neuladen.
+  const CARD_VERSION = "0.4.1";
   const MONTHS = [
     "Januar", "Februar", "März", "April", "Mai", "Juni",
     "Juli", "August", "September", "Oktober", "November", "Dezember",
@@ -52,6 +80,9 @@
     return m === "00" ? String(Number(h)) : `${Number(h)}:${m}`;
   };
 
+  const flatten = (list) =>
+    list.reduce((all, item) => all.concat(Array.isArray(item) ? flatten(item) : [item]), []);
+
   const h = (tag, props = {}, ...children) => {
     const el = document.createElement(tag);
     for (const [key, value] of Object.entries(props)) {
@@ -63,7 +94,7 @@
       else if (key === "disabled") el.disabled = true;
       else el.setAttribute(key, value === true ? "" : value);
     }
-    for (const child of children.flat()) {
+    for (const child of flatten(children)) {
       if (child == null || child === false) continue;
       el.append(child.nodeType ? child : document.createTextNode(String(child)));
     }
@@ -124,6 +155,12 @@
     .status { flex: 1 1 60%; font-size: .85em; color: var(--secondary-text-color); }
     .status.error { color: var(--error-color, #db4437); }
     .status.selectable { user-select: all; word-break: break-all; }
+    .stale {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; padding: 8px 10px;
+      border-radius: 8px; font-size: .85em; color: var(--primary-text-color);
+      background: color-mix(in srgb, var(--warning-color, #ffa600) 25%, transparent);
+    }
+    .stale span { flex: 1 1 60%; }
     .link-btn { font-size: .8em; padding: 4px 10px; min-height: 30px; }
     /* Natives <dialog>: liegt in der "top layer" und wird nie von Karten, Sections oder Themes beschnitten */
     dialog.overlay {
@@ -190,6 +227,7 @@
       this._stamp = null;
       this._syncCalendar = null;
       this._icalUrl = null;
+      this._serverVersion = null;
     }
 
     static getConfigElement() {
@@ -263,6 +301,7 @@
         }
         Object.assign(this._days, res.days || {});
         Object.assign(this._weeks, res.weeks || {});
+        this._serverVersion = res.version || null;
         this._syncCalendar = res.sync_calendar || null;
         this._icalUrl = res.ical_url || null;
         this._loaded = true;
@@ -697,6 +736,21 @@
       );
     }
 
+    // Karte (Browser, evtl. aus dem Zwischenspeicher) und Integration (Server) haben verschiedene Versionen
+    _staleBanner() {
+      if (!this._serverVersion || this._serverVersion === CARD_VERSION) return null;
+      return h(
+        "div",
+        { class: "stale", role: "alert" },
+        h(
+          "span",
+          {},
+          `Karte (${CARD_VERSION}) und Integration (${this._serverVersion}) passen nicht zusammen. Nach einem Update Home Assistant neu starten, dann hier neu laden.`
+        ),
+        h("button", { class: "text-btn", onclick: () => hardReload() }, "Neu laden")
+      );
+    }
+
     _render() {
       const root = this.shadowRoot;
       if (!root || !this._config) return;
@@ -815,6 +869,7 @@
         h(
           "ha-card",
           { class: this._brush !== null ? "brushing" : null },
+          this._staleBanner(),
           this._config.title ? h("div", { class: "title" }, this._config.title) : null,
           nav,
           grid,
@@ -882,11 +937,169 @@
     }
   }
 
+  // ------------------------------------------------------------------ Seite in der Seitenleiste
+
+  // Eigene Seite „Dienstplan“: Home Assistant lädt dieses Modul beim Öffnen selbst. Sie funktioniert daher auch dann,
+  // wenn die Karte im Dashboard (noch) nicht bereitsteht.
+  const PANEL_STYLE = `
+    :host { display: block; min-height: 100vh; box-sizing: border-box; background: var(--primary-background-color); }
+    header {
+      display: flex; align-items: center; gap: 8px; box-sizing: border-box; min-height: 56px;
+      padding: env(safe-area-inset-top, 0) 12px 0 4px;
+      background: var(--app-header-background-color, var(--primary-color)); color: var(--app-header-text-color, #fff);
+    }
+    header h1 { flex: 1; margin: 0; font-size: 1.15em; font-weight: 500; }
+    header select {
+      max-width: 55%; padding: 6px 8px; border-radius: 6px; font: inherit;
+      color: var(--primary-text-color); background: var(--card-background-color, #fff); border: 1px solid var(--divider-color);
+    }
+    .menu {
+      width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: inherit;
+      cursor: pointer; display: grid; place-items: center;
+    }
+    .menu svg { width: 24px; height: 24px; fill: currentColor; }
+    main { max-width: 640px; margin: 0 auto; padding: 12px; box-sizing: border-box; }
+    .empty { padding: 24px 8px; text-align: center; color: var(--secondary-text-color); line-height: 1.5; }
+  `;
+  const MENU_PATH = "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z";
+
+  class DienstplanPanel extends HTMLElement {
+    constructor() {
+      super();
+      this._hass = null;
+      this._narrow = false;
+      this._entity = null;
+      this._listKey = null;
+      this._card = null;
+      this.attachShadow({ mode: "open" });
+    }
+
+    set hass(hass) {
+      this._hass = hass;
+      this._update();
+    }
+
+    set narrow(value) {
+      this._narrow = !!value;
+      if (this._menu) this._menu.style.display = this._narrow ? "" : "none";
+    }
+
+    set route(_value) {}
+
+    set panel(_value) {}
+
+    // Alle Dienstplan-Kalender (Entitäten dieser Integration)
+    _entities() {
+      const hass = this._hass;
+      if (!hass) return [];
+      const registry = hass.entities || {};
+      const ids = Object.keys(hass.states || {}).filter((id) => {
+        if (!id.startsWith("calendar.")) return false;
+        const entry = registry[id];
+        if (entry && entry.platform) return entry.platform === DOMAIN;
+        const attributes = hass.states[id].attributes || {};
+        return "today_shift" in attributes; // Ersatz, falls die Registry nicht mitgeliefert wird
+      });
+      return ids.sort();
+    }
+
+    _update() {
+      if (!this._hass) return;
+      const ids = this._entities();
+      const key = ids.join("|");
+      if (key !== this._listKey) {
+        this._listKey = key;
+        if (!ids.includes(this._entity)) this._entity = ids[0] || null;
+        this._build(ids);
+      }
+      if (this._card) this._card.hass = this._hass;
+    }
+
+    _build(ids) {
+      const hass = this._hass;
+      const root = this.shadowRoot;
+      root.replaceChildren();
+      this._card = null;
+
+      const name = (id) => (hass.states[id] && hass.states[id].attributes.friendly_name) || id;
+      const menu = h(
+        "button",
+        {
+          class: "menu",
+          "aria-label": "Menü",
+          onclick: () =>
+            this.dispatchEvent(new CustomEvent("hass-toggle-menu", { bubbles: true, composed: true, detail: {} })),
+        },
+        (() => {
+          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          svg.setAttribute("viewBox", "0 0 24 24");
+          const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path.setAttribute("d", MENU_PATH);
+          svg.append(path);
+          return svg;
+        })()
+      );
+      menu.style.display = this._narrow ? "" : "none";
+      this._menu = menu;
+
+      const picker =
+        ids.length > 1
+          ? h(
+              "select",
+              {
+                "aria-label": "Dienstplan wählen",
+                onchange: (ev) => {
+                  this._entity = ev.target.value;
+                  this._build(ids);
+                  this._update();
+                },
+              },
+              ids.map((id) => h("option", { value: id, selected: id === this._entity }, name(id)))
+            )
+          : null;
+
+      let content;
+      if (this._entity) {
+        this._card = document.createElement("dienstplan-card");
+        this._card.setConfig({ type: "custom:dienstplan-card", entity: this._entity, show_times: true });
+        content = this._card;
+      } else {
+        content = h(
+          "div",
+          { class: "empty" },
+          "Noch kein Dienstplan eingerichtet. Bitte unter Einstellungen → Geräte & Dienste → „Dienstplan“ hinzufügen."
+        );
+      }
+
+      root.append(h("style", {}, PANEL_STYLE), h("header", {}, menu, h("h1", {}, "Dienstplan"), picker), h("main", {}, content));
+    }
+  }
+
+  // Aufräumen ist Sache des Nutzers: bei Bedarf Zwischenspeicher leeren und neu laden (Knopf auf der Karte)
+  async function hardReload() {
+    try {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+    } catch (err) {
+      // kein Service Worker: nichts zu tun
+    }
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    } catch (err) {
+      // kein Zwischenspeicher: nichts zu tun
+    }
+    location.reload();
+  }
+
   if (!customElements.get("dienstplan-card")) {
     customElements.define("dienstplan-card", DienstplanCard);
   }
   if (!customElements.get("dienstplan-card-editor")) {
     customElements.define("dienstplan-card-editor", DienstplanCardEditor);
+  }
+  if (!customElements.get("dienstplan-panel")) {
+    customElements.define("dienstplan-panel", DienstplanPanel);
   }
   window.customCards = window.customCards || [];
   if (!window.customCards.some((card) => card.type === "dienstplan-card")) {
@@ -896,4 +1109,5 @@
       description: "Monatsansicht: Tag antippen, Schicht wählen – erzeugt Kalendertermine.",
     });
   }
-})();
+  console.info(`%c DIENSTPLAN %c ${CARD_VERSION} `, "color:#fff;background:#3f51b5;font-weight:700", "color:#3f51b5");
+});

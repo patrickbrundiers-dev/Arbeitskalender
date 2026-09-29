@@ -1,7 +1,7 @@
 """Konstanten für die Dienstplan-Integration."""
 
 DOMAIN = "dienstplan"
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 CONF_NAME = "name"
 CONF_SHIFTS = "shifts"
@@ -12,6 +12,12 @@ CONF_VACATION_DAYS = "vacation_days"
 STORAGE_VERSION = 1
 
 CARD_URL = f"/{DOMAIN}_static/dienstplan-card.js"
+
+# Eigene Seite in der Seitenleiste: lädt die Karte selbst und hängt nicht von der Startseite
+# (index.html) oder vom Dashboard ab. Damit gibt es immer einen Weg, der funktioniert.
+PANEL_PATH = DOMAIN
+PANEL_ELEMENT = "dienstplan-panel"
+PANEL_ICON = "mdi:calendar-clock"
 
 SERVICE_SET_SHIFT = "set_shift"
 SERVICE_SET_SHIFTS = "set_shifts"

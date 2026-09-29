@@ -1,20 +1,22 @@
 """Prüft das echte __init__.py (Einrichtung der Karte) mit minimalen Home-Assistant-Stubs.
 
-Aufruf: ``python tests/check_setup.py``. Getestet wird: Karte wird mit Cache-Header und
-Versions-Adresse ausgeliefert, als Dashboard-Ressource eingetragen (einmalig, mit
-Versionswechsel), Fehler dabei stören die Einrichtung nie, und beim Entfernen der letzten
-Einrichtung wird aufgeräumt. Ein Test in einer echten HA-Instanz ersetzt das nicht.
+Aufruf: ``python tests/check_setup.py``. Getestet wird: Die Karte wird über drei voneinander unabhängige
+Wege bereitgestellt (Startseite, Dashboard-Ressource, Seitenleiste) unter einer Adresse mit Fingerabdruck
+der Datei; scheitert ein Schritt, laufen die übrigen trotzdem; beim Entfernen der letzten Einrichtung wird
+aufgeräumt. Die Signaturen der echten Home-Assistant-Funktionen sind separat gegen deren Quelltext
+geprüft; ein Test in einer echten HA-Instanz ersetzt das trotzdem nicht.
 """
 
 import asyncio
 import enum
+import hashlib
 import importlib.util
 import logging
 import sys
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from datetime import date, datetime
+from datetime import datetime
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "dienstplan"
@@ -39,7 +41,14 @@ except ImportError:
         Invalid=type("Invalid", (Exception,), {}),
     )
 
-calls = SimpleNamespace(js_urls=[], commands=[], views=[], static=[])
+calls = SimpleNamespace(js_urls=[], commands=[], views=[], static=[], panels=[], removed_panels=[])
+FAIL = set()  # Namen von Schritten, die im Test absichtlich scheitern
+PANELS = set()  # bereits registrierte Seitenleisten-Seiten
+
+
+def maybe_fail(name):
+    if name in FAIL:
+        raise RuntimeError(f"absichtlicher Fehler: {name}")
 
 
 @dataclass
@@ -74,13 +83,45 @@ class Platform(str, enum.Enum):
 ws = mod(
     "homeassistant.components.websocket_api",
     websocket_command=lambda schema: (lambda fn: fn),
-    async_register_command=lambda hass, fn: calls.commands.append(fn),
+    async_register_command=lambda hass, fn: (maybe_fail("Websocket-Befehl"), calls.commands.append(fn)),
     ActiveConnection=object,
     ERR_NOT_FOUND="not_found",
 )
-frontend = mod("homeassistant.components.frontend", add_extra_js_url=lambda hass, url: calls.js_urls.append(url))
+
+
+def add_extra_js_url(hass, url):
+    maybe_fail("Karte im Frontend anmelden")
+    calls.js_urls.append(url)
+
+
+def async_panel_exists(hass, path):
+    return path in PANELS
+
+
+def async_remove_panel(hass, path, *, warn_if_unknown=True):
+    calls.removed_panels.append((path, warn_if_unknown))
+    PANELS.discard(path)
+
+
+frontend = mod(
+    "homeassistant.components.frontend",
+    add_extra_js_url=add_extra_js_url,
+    async_panel_exists=async_panel_exists,
+    async_remove_panel=async_remove_panel,
+)
 http = mod("homeassistant.components.http", StaticPathConfig=StaticPathConfig)
-components = mod("homeassistant.components", websocket_api=ws, frontend=frontend, http=http)
+
+
+async def async_register_panel(hass, **kwargs):
+    maybe_fail("Seitenleiste")
+    calls.panels.append(kwargs)
+    PANELS.add(kwargs["frontend_url_path"])
+
+
+panel_custom = mod("homeassistant.components.panel_custom", async_register_panel=async_register_panel)
+components = mod(
+    "homeassistant.components", websocket_api=ws, frontend=frontend, http=http, panel_custom=panel_custom
+)
 cv = mod(
     "homeassistant.helpers.config_validation",
     config_entry_only_config_schema=lambda domain: {},
@@ -89,9 +130,13 @@ cv = mod(
     string=str,
 )
 REGISTRY = {}  # entry_id -> entity_id
+ENTITY_ENTRIES = {}  # entity_id -> Registry-Eintrag
 er = mod(
     "homeassistant.helpers.entity_registry",
-    async_get=lambda hass: SimpleNamespace(async_get_entity_id=lambda domain, platform, uid: REGISTRY.get(uid)),
+    async_get=lambda hass: SimpleNamespace(
+        async_get_entity_id=lambda domain, platform, uid: REGISTRY.get(uid),
+        async_get=lambda entity_id: ENTITY_ENTRIES.get(entity_id),
+    ),
 )
 dt_mod = mod("homeassistant.util.dt", now=lambda: NOW)
 util = mod("homeassistant.util", dt=dt_mod)
@@ -142,6 +187,7 @@ class FakeResources:
     async def async_create_item(self, data):
         if self.fail:
             raise RuntimeError("Speicher kaputt")
+        assert data["res_type"] == "module"
         self.items.append({"id": f"id{len(self.items) + 1}", "type": "module", "url": data["url"]})
 
     async def async_update_item(self, item_id, updates):
@@ -154,9 +200,17 @@ class FakeResources:
 SERVICES = {}
 
 
-def make_hass(resources="default", entries=()):
+def make_hass(resources="default", entries=(), entry_by_id=None):
     async def register_static(paths):
+        maybe_fail("Karte ausliefern")
         calls.static.extend(paths)
+
+    async def executor(fn, *args):
+        return fn(*args)
+
+    def register_service(domain, name, fn, schema=None, supports_response=None):
+        maybe_fail("Sprachdienst")
+        SERVICES[(domain, name)] = (fn, schema, supports_response)
 
     data = {}
     if resources == "default":
@@ -165,9 +219,13 @@ def make_hass(resources="default", entries=()):
         data["lovelace"] = SimpleNamespace(resources=resources)
     return SimpleNamespace(
         data=data,
-        services=SimpleNamespace(async_register=lambda domain, name, fn, schema=None, supports_response=None: SERVICES.update({(domain, name): (fn, schema, supports_response)})),
-        http=SimpleNamespace(async_register_static_paths=register_static, register_view=lambda v: calls.views.append(v)),
-        config_entries=SimpleNamespace(async_entries=lambda domain: list(entries)),
+        async_add_executor_job=executor,
+        services=SimpleNamespace(async_register=register_service),
+        http=SimpleNamespace(async_register_static_paths=register_static, register_view=lambda v: (maybe_fail("iCal-Feed"), calls.views.append(v))),
+        config_entries=SimpleNamespace(
+            async_entries=lambda domain: list(entries),
+            async_get_entry=lambda entry_id: (entry_by_id or {}).get(entry_id),
+        ),
     )
 
 
@@ -176,6 +234,11 @@ def reset():
     calls.commands.clear()
     calls.views.clear()
     calls.static.clear()
+    calls.panels.clear()
+    calls.removed_panels.clear()
+    PANELS.clear()
+    SERVICES.clear()
+    FAIL.clear()
     Store.removed.clear()
 
 
@@ -192,31 +255,67 @@ log = LogCapture()
 logging.getLogger(PKG).addHandler(log)
 logging.getLogger(PKG).setLevel(logging.DEBUG)
 run = asyncio.run
-URL = f"{const.CARD_URL}?v={const.VERSION}"
 
-# 1) Erststart: ausgeliefert mit Cache-Header, Versions-Adresse, Ressource angelegt
+DIGEST = hashlib.sha256((ROOT / "frontend" / "dienstplan-card.js").read_bytes()).hexdigest()[:8]
+URL = f"{const.CARD_URL}?v={const.VERSION}-{DIGEST}"
+
+
+def all_ways_ran(label):
+    """Jeder unabhängige Weg wurde ausgeführt."""
+    assert len(calls.static) == 1, label
+    assert calls.js_urls == [URL], (label, calls.js_urls)
+    assert len(calls.panels) == 1, label
+    assert calls.views and calls.commands, label
+    assert (const.DOMAIN, "ask") in SERVICES, label
+
+
+# 1) Erststart: alle drei Wege, Adresse mit Version und Fingerabdruck, Cache-Header
+reset()
+log.records.clear()
 hass = make_hass()
 assert run(integration.async_setup(hass, {})) is True
-assert len(calls.static) == 1 and calls.static[0].url_path == const.CARD_URL and calls.static[0].cache_headers is True
+all_ways_ran("erststart")
+assert calls.static[0].url_path == const.CARD_URL and calls.static[0].cache_headers is True
 assert calls.static[0].path.endswith("frontend/dienstplan-card.js") and Path(calls.static[0].path).is_file()
-assert calls.js_urls == [URL], calls.js_urls
 assert [i["url"] for i in hass.data["lovelace"].resources.items] == [URL]
-assert calls.views and calls.commands
+panel = calls.panels[0]
+assert panel["frontend_url_path"] == const.PANEL_PATH == "dienstplan"
+assert panel["webcomponent_name"] == const.PANEL_ELEMENT == "dienstplan-panel"
+assert panel["module_url"] == URL and panel["sidebar_title"] == "Dienstplan" and panel["require_admin"] is False
+assert panel["sidebar_icon"] == const.PANEL_ICON
+summary = [r.getMessage() for r in log.records if r.levelno == logging.INFO and "gestartet" in r.getMessage()]
+assert summary and const.VERSION in summary[0] and URL in summary[0], summary
+assert "Dashboard-Ressource: created" in summary[0] and "Seitenleiste: ok" in summary[0], summary[0]
+assert not [r for r in log.records if r.levelno >= logging.WARNING], "im Normalfall keine Warnung"
 
-# 2) Neustart mit gleicher Version: kein zweiter Eintrag; Versionswechsel: Adresse wird angepasst
+# Der Fingerabdruck ändert sich mit dem Inhalt (sonst würde ein Zwischenspeicher eine alte Karte ausliefern)
+assert integration._card_digest(ROOT / "frontend" / "dienstplan-card.js") == DIGEST
+tmp = Path(__file__).parent / "_digest_probe.js"
+try:
+    tmp.write_text("a", encoding="utf-8")
+    first = integration._card_digest(tmp)
+    tmp.write_text("b", encoding="utf-8")
+    assert first != integration._card_digest(tmp)
+finally:
+    tmp.unlink(missing_ok=True)
+assert integration._card_digest(Path("/gibt/es/nicht.js")) is None
+
+# 2) Neustart mit gleicher Version: kein zweiter Eintrag, Seite nicht doppelt; Versionswechsel: Adresse wird angepasst
 run(integration.async_setup(hass, {}))
 assert len(hass.data["lovelace"].resources.items) == 1
+assert len(calls.panels) == 1, "Seite nur einmal anlegen"
 hass.data["lovelace"].resources.items[0]["url"] = const.CARD_URL + "?v=0.0.1"
 run(integration.async_setup(hass, {}))
 assert [i["url"] for i in hass.data["lovelace"].resources.items] == [URL]
 
 # 3) Fremde Ressourcen bleiben unberührt
+reset()
 other = {"id": "o", "type": "module", "url": "/hacsfiles/x/x.js"}
 hass = make_hass(FakeResources([other]))
 run(integration.async_setup(hass, {}))
 assert other in hass.data["lovelace"].resources.items and len(hass.data["lovelace"].resources.items) == 2
 
-# 4) Kein Lovelace / YAML-Modus / kaputter Speicher: Einrichtung gelingt trotzdem
+# 4) Kein Lovelace / YAML-Modus / kaputter Speicher: Einrichtung gelingt, die anderen Wege laufen
 for label, h in (
     ("ohne lovelace", make_hass(None)),
     ("yaml", make_hass(SimpleNamespace(async_items=lambda: []))),
@@ -225,23 +324,89 @@ for label, h in (
     reset()
     log.records.clear()
     assert run(integration.async_setup(h, {})) is True, label
-    assert calls.js_urls == [URL], label  # Auslieferung wie gehabt
-assert any(r.levelno == logging.WARNING for r in log.records), "Fehler wird protokolliert"
+    all_ways_ran(label)
+assert any(r.levelno == logging.WARNING for r in log.records), "Fehler der Ressource wird protokolliert"
 
-# 5) Entfernen: nur bei der letzten Einrichtung wird die Ressource ausgetragen
+# 5) Jeder Schritt ist für sich abgesichert: scheitert einer, laufen alle anderen und die Einrichtung gelingt
+for failing in (
+    "Karte ausliefern",
+    "Karte im Frontend anmelden",
+    "Seitenleiste",
+    "iCal-Feed",
+    "Websocket-Befehl",
+    "Sprachdienst",
+):
+    reset()
+    log.records.clear()
+    FAIL.add(failing)
+    hass = make_hass()
+    assert run(integration.async_setup(hass, {})) is True, failing
+    errors = [r for r in log.records if r.levelno == logging.ERROR and failing in r.getMessage()]
+    assert errors and errors[0].exc_info, f"{failing}: Fehler mit Ablaufverfolgung protokolliert"
+    assert [i["url"] for i in hass.data["lovelace"].resources.items] == [URL], f"{failing}: Ressource trotzdem"
+    ran = {
+        "Karte ausliefern": bool(calls.static),
+        "Karte im Frontend anmelden": bool(calls.js_urls),
+        "Seitenleiste": bool(calls.panels),
+        "iCal-Feed": bool(calls.views),
+        "Websocket-Befehl": bool(calls.commands),
+        "Sprachdienst": (const.DOMAIN, "ask") in SERVICES,
+    }
+    for step, done in ran.items():
+        assert done is (step != failing), f"{failing}: Schritt „{step}“ {'lief nicht' if step != failing else 'lief trotz Fehler'}"
+    assert any("FEHLER" in r.getMessage() for r in log.records if "gestartet" in r.getMessage()), "Zusammenfassung nennt den Fehler"
+
+# 6) Kartendatei fehlt (z. B. unvollständiger HACS-Download): deutliche Fehlermeldung, Einrichtung gelingt
+reset()
+log.records.clear()
+real_file = integration.CARD_FILE
+integration.CARD_FILE = ROOT / "frontend" / "gibt-es-nicht.js"
+try:
+    hass = make_hass()
+    assert run(integration.async_setup(hass, {})) is True
+finally:
+    integration.CARD_FILE = real_file
+assert any(r.levelno == logging.ERROR and "Kartendatei fehlt" in r.getMessage() for r in log.records)
+assert calls.js_urls == [f"{const.CARD_URL}?v={const.VERSION}"], "ohne Datei keine Fingerabdruck-Adresse"
+
+# 7) Entfernen: nur bei der letzten Einrichtung werden Ressource und Seite ausgetragen
+reset()
 entry = SimpleNamespace(entry_id="e1")
 hass = make_hass(entries=[entry, SimpleNamespace(entry_id="e2")])
 run(integration.async_setup(hass, {}))
 run(integration.async_remove_entry(hass, entry))
 assert len(hass.data["lovelace"].resources.items) == 1, "noch eine Einrichtung übrig"
+assert calls.removed_panels == [] and "dienstplan" in PANELS
 assert Store.removed == [f"{const.DOMAIN}.e1"]
 
 hass = make_hass(entries=[entry])
 run(integration.async_setup(hass, {}))
 run(integration.async_remove_entry(hass, entry))
 assert hass.data["lovelace"].resources.items == [], "letzte Einrichtung räumt auf"
+assert calls.removed_panels == [("dienstplan", True)], "Seite wird entfernt (nur wenn es sie gibt)"
 
-# 6) Service dienstplan.ask: registriert, liefert Antwort, findet Einträge und Kalender
+# Ältere Home-Assistant-Versionen haben async_panel_exists noch nicht: kein Importfehler, Prüfung über die Panel-Liste
+reset()
+saved = frontend.async_panel_exists
+del frontend.async_panel_exists
+try:
+    hass = make_hass()
+    hass.data["frontend_panels"] = {"dienstplan": object()}
+    assert run(integration.async_setup(hass, {})) is True
+    assert calls.panels == [], "vorhandene Seite wird nicht doppelt angelegt"
+    hass = make_hass()
+    assert run(integration.async_setup(hass, {})) is True
+    assert len(calls.panels) == 1
+finally:
+    frontend.async_panel_exists = saved
+
+# Aufräumen darf nie scheitern
+reset()
+hass = make_hass(FakeResources(fail=True), entries=[entry])
+run(integration.async_setup(hass, {}))
+run(integration.async_remove_entry(hass, entry))
+
+# 8) Service dienstplan.ask: registriert, liefert Antwort, findet Einträge und Kalender
 from importlib import import_module as _im  # noqa: E402
 
 shifts = _im(f"{PKG}.shifts")
@@ -257,7 +422,7 @@ jenny = fake_entry("e1", "Dienstplan Jenny", {"2026-09-30": "F1"})
 max_ = fake_entry("e2", "Dienstplan Max", {"2026-09-30": "U"})
 REGISTRY.update({"e1": "calendar.dienstplan_jenny_dienstplan", "e2": "calendar.dienstplan_max_dienstplan"})
 
-SERVICES.clear()
+reset()
 hass = make_hass(entries=[jenny, max_])
 run(integration.async_setup(hass, {}))
 handler, schema, supports = SERVICES[(const.DOMAIN, "ask")]
@@ -281,5 +446,29 @@ assert call(person="Peter")["speech"] == "Für Peter habe ich keinen Dienstplan.
 # nicht geladene Einträge werden übersprungen
 max_.state = ConfigEntryState.NOT_LOADED
 assert call(day="morgen")["speech"].startswith("Jenny hat morgen") and "Max" not in call(day="morgen")["speech"]
+
+# 9) Websocket-Befehl: meldet die Version der Integration (die Karte erkennt damit einen veralteten Zwischenspeicher)
+manager = SimpleNamespace(
+    shifts={"F1": SimpleNamespace(as_dict=lambda: {"code": "F1"})},
+    days_between=lambda start, end: {"2026-09-30": "F1"},
+    stats_range=lambda start, end: {},
+    sync_calendar=None,
+    feed_url=lambda: "https://ha.example/feed.ics",
+)
+loaded = SimpleNamespace(state=ConfigEntryState.LOADED, runtime_data=manager)
+ENTITY_ENTRIES["calendar.jenny"] = SimpleNamespace(platform="dienstplan", config_entry_id="e1")
+ENTITY_ENTRIES["calendar.fremd"] = SimpleNamespace(platform="google", config_entry_id="g1")
+hass = make_hass(entry_by_id={"e1": loaded})
+results, errors = [], []
+connection = SimpleNamespace(
+    send_result=lambda msg_id, result: results.append((msg_id, result)),
+    send_error=lambda msg_id, code, text: errors.append((msg_id, code)),
+)
+integration.ws_get_days(hass, connection, {"id": 7, "entity_id": "calendar.jenny", "start": "a", "end": "b"})
+assert results and results[0][0] == 7 and results[0][1]["version"] == const.VERSION, results
+assert results[0][1]["days"] == {"2026-09-30": "F1"} and results[0][1]["shifts"] == [{"code": "F1"}]
+integration.ws_get_days(hass, connection, {"id": 8, "entity_id": "calendar.fremd", "start": "a", "end": "b"})
+integration.ws_get_days(hass, connection, {"id": 9, "entity_id": "calendar.unbekannt", "start": "a", "end": "b"})
+assert errors == [(8, "not_found"), (9, "not_found")], errors
 
 print("Einrichtung: alle Prüfungen bestanden")

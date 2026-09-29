@@ -4,6 +4,7 @@ Dienste (Früh, Spät, Nacht …) pro Tag in einer Monatsansicht eintragen – d
 
 - **Kalender** pro Person (`calendar.<name>_dienstplan`), sichtbar im HA-Kalender
 - **Karte**: Tag antippen → Schicht wählen (auch für einen Zeitraum), **Kürzel in der Legende antippen → „Schnell eintragen“ (ein Tap pro Tag)**, Woche antippen → mehrere Tage auf einmal setzen oder Woche kopieren, Monatssumme, Wischen wechselt den Monat, Feiertage markiert
+- **Eigene Seite „Dienstplan“ in der Seitenleiste**: dieselbe Ansicht als Vollbild, funktioniert unabhängig vom Dashboard (praktisch auf dem Handy)
 - **Abgleich** in einen anderen Kalender (Google, lokaler Kalender, CalDAV …); geänderte Uhrzeiten werden automatisch nachgezogen
 - **Kalender-Link (iCal)** zum Abonnieren in Google/Apple/Outlook, ohne dass Home Assistant dafür einen Kalender-Zugang braucht
 - **Stunden und Bilanz**: Wochenstunden, Soll/Ist, Urlaubstage und Resturlaub
@@ -47,7 +48,9 @@ Optional bei der Einrichtung: **Wochensoll** (für die Bilanz), **Urlaubstage pr
 
 ## Karte
 
-Wird von der Integration automatisch bereitgestellt. Im Dashboard *Karte hinzufügen → Dienstplan* (mit grafischem Editor) oder per YAML:
+Die einfachste Bedienung ist die Seite **„Dienstplan“ in der Seitenleiste** (bei mehreren Plänen mit Auswahl oben). Sie legt die Integration selbst an und lädt ihre Ansicht bei jedem Öffnen von allein. Wer sie nicht braucht, blendet sie über *Profil* → *Seitenleiste bearbeiten* aus.
+
+Zusätzlich gibt es die Karte für das Dashboard. Sie wird von der Integration automatisch bereitgestellt. Im Dashboard *Karte hinzufügen → Dienstplan* (mit grafischem Editor) oder per YAML:
 
 ```yaml
 type: custom:dienstplan-card
@@ -69,15 +72,27 @@ holidays: calendar.deutschland    # optional: Feiertagskalender
 
 ### Karte erscheint nicht („Custom element doesn't exist: dienstplan-card“)
 
-Die Integration liefert die Karte aus und trägt sie beim Start **selbst als Dashboard-Ressource** ein (*Einstellungen → Dashboards → ⋮ → Ressourcen*, nur wenn die Ressourcen im Speichermodus laufen, was der Standard ist). Das Dashboard lädt die Karte dann bei jedem Öffnen. Nach einer **Erstinstallation oder einem Update** gilt trotzdem:
+**Ursache:** Home Assistant merkt sich die Startseite (`index.html`) im Browser bzw. in der Handy-App und zeigt beim nächsten Öffnen zuerst diese gemerkte Fassung (Service Worker, „stale-while-revalidate“). Nach einer Erstinstallation, einem Update oder einem Neustart fehlt darin die Karte noch, sodass sie einmal nicht geladen wird, obwohl alles korrekt installiert ist. Die Integration umgeht das auf drei voneinander unabhängigen Wegen:
 
-1. Home Assistant neu starten und **warten, bis alles hochgefahren ist**.
+1. **Seite „Dienstplan“ in der Seitenleiste:** Home Assistant lädt sie beim Öffnen selbst. Sie funktioniert immer.
+2. **Dashboard-Ressource:** die Integration trägt die Karte beim Start selbst ein (*Einstellungen → Dashboards → ⋮ → Ressourcen*, nur im Speichermodus, das ist der Standard). Das Dashboard lädt sie dann bei jedem Öffnen.
+3. **Startseite:** wie bisher, greift aber erst, wenn die gemerkte Startseite erneuert ist.
+
+Die Adresse der Karte enthält die Version **und einen Fingerabdruck der Datei**, jede Änderung wird also garantiert neu geladen.
+
+**Wenn die Karte trotzdem fehlt:**
+
+1. Home Assistant neu starten und warten, bis alles hochgefahren ist. Danach die Seite „Dienstplan“ in der Seitenleiste öffnen. Zeigt sie den Kalender, ist die Integration in Ordnung.
 2. **Handy-App:** *Einstellungen → Companion-App → Fehlerbehebung → Frontend-Cache zurücksetzen*, danach die App komplett schließen und neu öffnen. **Browser:** Strg+F5.
 3. Steht im Karten-Editor noch eine rote Fehlermeldung, den Editor schließen und neu öffnen. Die Meldung entsteht, wenn die Karte beim Öffnen noch nicht geladen war, und verschwindet nicht von selbst.
-4. **Prüfen, ob die Datei ausgeliefert wird:** `https://<deine-HA-Adresse>/dienstplan_static/dienstplan-card.js` im Browser öffnen. Es muss Programmtext erscheinen. Bei „404 Not Found“ ist die Integration nicht (vollständig) geladen bzw. der Ordner `frontend` fehlt in `custom_components/dienstplan/`.
-5. **Ressourcen im YAML-Modus:** Dort kann die Integration nichts eintragen. Dann selbst die Ressource `/dienstplan_static/dienstplan-card.js` als *JavaScript-Modul* hinzufügen.
+4. Erscheint auf der Karte der gelbe Hinweis **„Karte und Integration passen nicht zusammen“**, laufen Browser und Server mit verschiedenen Versionen: Home Assistant neu starten, dann *Neu laden* auf der Karte antippen (leert den Zwischenspeicher).
+5. Steht auf der Karte **„Dienstplan-Karte konnte nicht starten: …“**, nennt der Text den Grund. Bitte als Issue melden.
+6. **Prüfen, ob die Datei ausgeliefert wird:** `https://<deine-HA-Adresse>/dienstplan_static/dienstplan-card.js` im Browser öffnen. Es muss Programmtext erscheinen. Bei „404 Not Found“ ist die Integration nicht (vollständig) geladen bzw. der Ordner `frontend` fehlt in `custom_components/dienstplan/`.
+7. **Ressourcen im YAML-Modus:** Dort kann die Integration nichts eintragen. Dann selbst die Ressource `/dienstplan_static/dienstplan-card.js` als *JavaScript-Modul* hinzufügen. Die Seite in der Seitenleiste braucht das nicht.
 
-Im Protokoll steht beim Start „Dienstplan-Karte wird unter … bereitgestellt“ und beim ersten Mal „Dienstplan-Karte als Dashboard-Ressource eingetragen“. Wird die letzte Einrichtung entfernt, verschwindet auch die Ressource wieder.
+**Protokoll** (*Einstellungen → System → Protokolle*, nach „dienstplan“ suchen): Beim Start steht genau eine Zeile nach dem Muster
+`Dienstplan 0.4.1 gestartet, Karte /dienstplan_static/dienstplan-card.js?v=0.4.1-ab12cd34 (Auslieferung: ok, Frontend-Modul: ok, Dashboard-Ressource: unchanged, Seitenleiste: ok)`.
+Ein Schritt mit `FEHLER` (mit Fehlerbeschreibung darüber) oder `Kartendatei: FEHLT` zeigt, was nicht klappt. Scheitert ein Schritt, laufen die übrigen trotzdem weiter. Wird die letzte Einrichtung entfernt, verschwinden Ressource und Seite wieder.
 
 ## Sensoren
 
@@ -244,7 +259,7 @@ data:
 ```
 python -m pytest tests -q          # Dienste, Stunden, iCal
 python tests/check_manager.py      # Manager/Abgleich mit Home-Assistant-Stubs
-python tests/check_setup.py        # Einrichtung: Karte ausliefern, Dashboard-Ressource, Service ask
+python tests/check_setup.py        # Einrichtung: drei Auslieferungswege, Absicherung je Schritt, Service ask
 node tests/card.test.js            # Karte mit Mini-DOM
 ```
 

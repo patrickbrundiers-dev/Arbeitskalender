@@ -102,3 +102,21 @@ def test_version_is_consistent():
     version = re.search(r'^VERSION = "([^"]+)"', const, re.M).group(1)
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["version"] == version, (manifest["version"], version)
+
+
+def test_card_version_matches_integration():
+    """Die Karte vergleicht ihre eigene Version mit der der Integration; beide müssen übereinstimmen."""
+    const = (ROOT / "const.py").read_text(encoding="utf-8")
+    version = re.search(r'^VERSION = "([^"]+)"', const, re.M).group(1)
+    card = (ROOT / "frontend" / "dienstplan-card.js").read_text(encoding="utf-8")
+    assert re.search(r'const CARD_VERSION = "([^"]+)"', card).group(1) == version
+
+
+def test_manifest_lists_every_home_assistant_dependency_used():
+    """Wer panel_custom/lovelace/frontend nutzt, muss es als Abhängigkeit nennen (sonst fehlt es beim Start)."""
+    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    source = (ROOT / "__init__.py").read_text(encoding="utf-8")
+    for component in ("panel_custom", "frontend", "http", "websocket_api"):
+        if re.search(rf"homeassistant\.components(\.{component}\b| import [^\n]*\b{component}\b)", source):
+            assert component in manifest["dependencies"], component
+    assert "lovelace" in manifest["dependencies"], "Dashboard-Ressourcen"

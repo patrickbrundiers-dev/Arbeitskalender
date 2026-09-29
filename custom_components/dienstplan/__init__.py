@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+import hashlib
 import logging
 from pathlib import Path
 
 import voluptuous as vol
 
-from homeassistant.components import websocket_api
+from homeassistant.components import frontend as ha_frontend, panel_custom, websocket_api
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -18,15 +21,28 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
-from .const import CARD_URL, DOMAIN, SERVICE_ASK, STORAGE_VERSION, VERSION, WS_GET_DAYS
+from .const import (
+    CARD_URL,
+    DOMAIN,
+    PANEL_ELEMENT,
+    PANEL_ICON,
+    PANEL_PATH,
+    SERVICE_ASK,
+    STORAGE_VERSION,
+    VERSION,
+    WS_GET_DAYS,
+)
 from .feed import DienstplanFeedView
 from .manager import DienstplanManager
-from .resources import CREATED, UNSUPPORTED, UPDATED, async_ensure_resource, async_remove_resource
+from .resources import UNSUPPORTED, async_ensure_resource, async_remove_resource
 from .voice import Person, answer, display_name
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.CALENDAR, Platform.SENSOR]
+
+CARD_FILE = Path(__file__).parent / "frontend" / "dienstplan-card.js"
+CARD_URL_KEY = f"{DOMAIN}_card_url"
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -41,20 +57,95 @@ ASK_SCHEMA = vol.Schema(
 DienstplanConfigEntry = ConfigEntry[DienstplanManager]
 
 
+@contextmanager
+def _guard(step: str, report: dict[str, str] | None = None) -> Iterator[None]:
+    """Einen Einrichtungsschritt absichern: Fehler werden protokolliert, die übrigen Schritte laufen weiter.
+
+    Die Karte muss auch dann erreichbar bleiben, wenn eine Zugabe (Sprachdienst, Dashboard-Ressource,
+    Seitenleiste …) an einer anderen Home-Assistant-Version scheitert.
+    """
+    try:
+        yield
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Dienstplan: Schritt „%s“ ist fehlgeschlagen; die übrigen Teile laufen weiter", step)
+        if report is not None:
+            report[step] = "FEHLER"
+
+
+def _card_digest(path: Path) -> str | None:
+    """Kurzer Fingerabdruck der Kartendatei (None, wenn sie fehlt)."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:8]
+    except OSError:
+        return None
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Karte ausliefern, iCal-Feed und Websocket-Befehl registrieren (einmalig)."""
-    card_path = Path(__file__).parent / "frontend" / "dienstplan-card.js"
-    # Mit Cache-Header: die Adresse trägt ?v=<Version>, ein Update ändert sie und lädt die neue Karte
-    await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(card_path), True)])
-    add_extra_js_url(hass, f"{CARD_URL}?v={VERSION}")
-    _LOGGER.info("Dienstplan-Karte wird unter %s bereitgestellt", CARD_URL)
-    await _async_sync_dashboard_resource(hass, present=True)
-    hass.http.register_view(DienstplanFeedView(hass))
-    websocket_api.async_register_command(hass, ws_get_days)
-    hass.services.async_register(
-        DOMAIN, SERVICE_ASK, _async_handle_ask, schema=ASK_SCHEMA, supports_response=SupportsResponse.ONLY
+    """Karte ausliefern (drei voneinander unabhängige Wege), iCal-Feed, Websocket-Befehl und Service registrieren."""
+    report: dict[str, str] = {}
+
+    # Die Adresse trägt Version UND Fingerabdruck der Datei: jede Änderung ergibt eine neue Adresse, sodass
+    # weder Browser- noch Service-Worker-Zwischenspeicher eine ältere Karte unter derselben Adresse ausliefern.
+    digest = await hass.async_add_executor_job(_card_digest, CARD_FILE)
+    card_url = f"{CARD_URL}?v={VERSION}" + (f"-{digest}" if digest else "")
+    hass.data[CARD_URL_KEY] = card_url
+    if digest is None:
+        _LOGGER.error("Dienstplan: Kartendatei fehlt (%s). Bitte die Integration in HACS neu herunterladen", CARD_FILE)
+        report["Kartendatei"] = "FEHLT"
+
+    with _guard("Karte ausliefern", report):
+        await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(CARD_FILE), True)])
+        report["Auslieferung"] = "ok"
+    # Weg 1: in jede neu geladene Startseite einbinden
+    with _guard("Karte im Frontend anmelden", report):
+        add_extra_js_url(hass, card_url)
+        report["Frontend-Modul"] = "ok"
+    # Weg 2: als Dashboard-Ressource (das Dashboard lädt sie bei jedem Öffnen selbst, unabhängig von der Startseite)
+    with _guard("Dashboard-Ressource", report):
+        report["Dashboard-Ressource"] = await _async_sync_dashboard_resource(hass, url=card_url)
+    # Weg 3: eigene Seite in der Seitenleiste (lädt die Karte beim Öffnen selbst)
+    with _guard("Seitenleiste", report):
+        report["Seitenleiste"] = await _async_register_panel(hass, card_url)
+    with _guard("iCal-Feed", report):
+        hass.http.register_view(DienstplanFeedView(hass))
+    with _guard("Websocket-Befehl", report):
+        websocket_api.async_register_command(hass, ws_get_days)
+    with _guard("Sprachdienst", report):
+        hass.services.async_register(
+            DOMAIN, SERVICE_ASK, _async_handle_ask, schema=ASK_SCHEMA, supports_response=SupportsResponse.ONLY
+        )
+
+    _LOGGER.info(
+        "Dienstplan %s gestartet, Karte %s (%s)",
+        VERSION,
+        card_url,
+        ", ".join(f"{name}: {state}" for name, state in report.items()),
     )
     return True
+
+
+def _panel_exists(hass: HomeAssistant) -> bool:
+    """Gibt es die Seite schon? (``async_panel_exists`` fehlt in älteren Home-Assistant-Versionen.)"""
+    checker = getattr(ha_frontend, "async_panel_exists", None)
+    if checker is not None:
+        return bool(checker(hass, PANEL_PATH))
+    return PANEL_PATH in hass.data.get("frontend_panels", {})
+
+
+async def _async_register_panel(hass: HomeAssistant, card_url: str) -> str:
+    """Seite „Dienstplan“ in der Seitenleiste anlegen (einmalig)."""
+    if _panel_exists(hass):
+        return "vorhanden"
+    await panel_custom.async_register_panel(
+        hass,
+        frontend_url_path=PANEL_PATH,
+        webcomponent_name=PANEL_ELEMENT,
+        sidebar_title="Dienstplan",
+        sidebar_icon=PANEL_ICON,
+        module_url=card_url,
+        require_admin=False,
+    )
+    return "ok"
 
 
 async def _async_handle_ask(call: ServiceCall) -> dict:
@@ -93,28 +184,36 @@ async def async_remove_entry(hass: HomeAssistant, entry: DienstplanConfigEntry) 
     """Gespeicherte Dienste löschen, wenn der Eintrag entfernt wird."""
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
     if not [e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != entry.entry_id]:
-        await _async_sync_dashboard_resource(hass, present=False)  # letzte Einrichtung: Ressource aufräumen
+        # Letzte Einrichtung: Dashboard-Ressource und Seitenleiste wieder aufräumen
+        with _guard("Aufräumen"):
+            await _async_sync_dashboard_resource(hass, url=None)
+            if _panel_exists(hass):
+                ha_frontend.async_remove_panel(hass, PANEL_PATH)
 
 
-async def _async_sync_dashboard_resource(hass: HomeAssistant, *, present: bool) -> None:
-    """Karte als Dashboard-Ressource ein- bzw. austragen.
+async def _async_sync_dashboard_resource(hass: HomeAssistant, *, url: str | None) -> str:
+    """Karte als Dashboard-Ressource ein- (``url`` gesetzt) bzw. austragen (``url`` ist None).
 
     Ressourcen lädt das Dashboard bei jedem Öffnen selbst. Damit erscheint die Karte auch dann,
-    wenn die Seite vor dem Start dieser Integration geladen wurde. Best effort: nur im
-    Speichermodus (Standard), Fehler werden nur protokolliert und stören die Einrichtung nie.
+    wenn die Startseite vor dem Start dieser Integration zwischengespeichert wurde. Best effort:
+    nur im Speichermodus (Standard); Fehler werden protokolliert und stören die Einrichtung nie.
     """
     try:
         resources = getattr(hass.data.get("lovelace"), "resources", None)
-        if present:
-            result = await async_ensure_resource(resources, CARD_URL, f"{CARD_URL}?v={VERSION}")
-            if result in (CREATED, UPDATED):
-                _LOGGER.info("Dienstplan-Karte als Dashboard-Ressource eingetragen (%s)", result)
-            elif result == UNSUPPORTED:
-                _LOGGER.debug("Dashboard-Ressourcen nicht änderbar (YAML-Modus?) – Karte wird trotzdem ausgeliefert")
-        else:
+        if url is None:
             await async_remove_resource(resources, CARD_URL)
+            return "entfernt"
+        result = await async_ensure_resource(resources, CARD_URL, url)
+        if result == UNSUPPORTED:
+            _LOGGER.info(
+                "Dienstplan: Dashboard-Ressourcen sind nicht änderbar (YAML-Modus?). Die Karte wird trotzdem "
+                "ausgeliefert; im YAML-Modus bitte %s als Modul unter resources eintragen",
+                url,
+            )
+        return result
     except Exception:  # noqa: BLE001 - die Ressource ist nur eine Zugabe
         _LOGGER.warning("Dashboard-Ressource für die Dienstplan-Karte konnte nicht angepasst werden", exc_info=True)
+        return "FEHLER"
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: DienstplanConfigEntry) -> None:
@@ -153,6 +252,7 @@ def ws_get_days(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
             "shifts": [shift.as_dict() for shift in manager.shifts.values()],
             "days": manager.days_between(msg["start"], msg["end"]),
             "weeks": manager.stats_range(msg["start"], msg["end"]),
+            "version": VERSION,
             "sync_calendar": manager.sync_calendar,
             "ical_url": manager.feed_url(),
         },

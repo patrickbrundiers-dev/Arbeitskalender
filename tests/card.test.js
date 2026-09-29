@@ -25,14 +25,26 @@ class N {
   }
 }
 global.window = global;
-global.document = { createElement: (t) => new N(t), createTextNode: (s) => ({ nodeType: 3, text: s }) };
+global.document = {
+  // wie im Browser: registrierte Custom-Elemente werden als solche erzeugt
+  createElement: (t) => {
+    const C = global.customElements.get(t);
+    return C ? new C() : new N(t);
+  },
+  createElementNS: (_ns, t) => new N(t),
+  createTextNode: (s) => ({ nodeType: 3, text: s }),
+};
 global.HTMLElement = class extends N {
   constructor() { super("host"); }
   attachShadow() { this.shadowRoot = new N("shadow"); return this.shadowRoot; }
 };
 global.customElements = { _m: {}, get(n) { return this._m[n]; }, define(n, c) { this._m[n] = c; } };
 const setNavigator = (value) => Object.defineProperty(globalThis, "navigator", { value, configurable: true });
-require(path.join(__dirname, "..", "custom_components", "dienstplan", "frontend", "dienstplan-card.js"));
+const CARD_FILE = path.join(__dirname, "..", "custom_components", "dienstplan", "frontend", "dienstplan-card.js");
+const quiet = console.info;
+console.info = () => {};
+require(CARD_FILE);
+console.info = quiet;
 
 const text = (n) => (n.nodeType === 3 ? n.text : n.children.map(text).join(""));
 const all = (n, out = []) => { out.push(n); (n.children || []).forEach((c) => all(c, out)); return out; };
@@ -63,6 +75,7 @@ function setup(config = {}, extra = {}) {
           "2026-09-28": { hours: 38.5, target: 38.5, balance: 0, missing: 0 },
           "2026-09-21": { hours: 30, target: 38.5, balance: -8.5, missing: 1 },
         },
+        version: extra.version,
         sync_calendar: extra.sync || null,
         ical_url: extra.ical === undefined ? "https://ha.example/api/dienstplan/feed/e1/tok/calendar.ics" : extra.ical,
       };
@@ -522,7 +535,7 @@ const option = (root, label) => btn(overlay(root), (n) => n.className.includes("
       Card.getStubConfig({ states: { "calendar.privat": { attributes: {} }, "calendar.jenny": { attributes: { today_shift: "F1" } } } }),
       { entity: "calendar.jenny", show_times: true }
     );
-    assert.strictEqual(Card.getConfigElement().tag, "dienstplan-card-editor");
+    assert.ok(Card.getConfigElement() instanceof customElements.get("dienstplan-card-editor"));
 
     const Editor = customElements.get("dienstplan-card-editor");
     const editor = new Editor();
@@ -537,6 +550,131 @@ const option = (root, label) => btn(overlay(root), (n) => n.className.includes("
     assert.strictEqual(form.computeLabel({ name: "holidays" }), "Feiertagskalender (optional)");
     form.listeners["value-changed"]({ detail: { value: { entity: "calendar.jenny", show_times: false } } });
     assert.deepStrictEqual(events, [{ entity: "calendar.jenny", show_times: false }]);
+  }
+
+  // ---------- Hinweis bei veralteter Karte im Browser (Zwischenspeicher) + Neu laden
+  {
+    const source = require("fs").readFileSync(CARD_FILE, "utf8");
+    const cardVersion = /const CARD_VERSION = "([^"]+)"/.exec(source)[1];
+    for (const [version, expected] of [[cardVersion, false], [undefined, false], ["0.0.1", true]]) {
+      const { card, hass, root } = setup({}, { version });
+      card.hass = hass;
+      await settle();
+      const banner = find(root(), (n) => n.className === "stale");
+      assert.strictEqual(!!banner, expected, `Hinweis bei Version ${version}`);
+      if (banner) assert.ok(text(banner).includes("passen nicht zusammen") && text(banner).includes("0.0.1"));
+    }
+    const { card, hass, root } = setup({}, { version: "0.0.1" });
+    card.hass = hass;
+    await settle();
+    const log = [];
+    setNavigator({
+      serviceWorker: { getRegistrations: async () => [{ unregister: async () => log.push("sw") }, { unregister: async () => log.push("sw2") }] },
+    });
+    global.caches = { keys: async () => ["a", "b"], delete: async (k) => log.push(`cache ${k}`) };
+    global.location = { reload: () => log.push("reload") };
+    btn(find(root(), (n) => n.className === "stale"), (n) => text(n) === "Neu laden").listeners.click();
+    await settle();
+    assert.deepStrictEqual(log, ["sw", "sw2", "cache a", "cache b", "reload"], "Service Worker und Zwischenspeicher leeren, dann neu laden");
+    // ohne Service Worker / Zwischenspeicher wird trotzdem neu geladen
+    log.length = 0;
+    setNavigator({});
+    delete global.caches;
+    btn(find(root(), (n) => n.className === "stale"), (n) => text(n) === "Neu laden").listeners.click();
+    await settle();
+    assert.deepStrictEqual(log, ["reload"]);
+  }
+
+  // ---------- Seite in der Seitenleiste
+  {
+    const Panel = customElements.get("dienstplan-panel");
+    assert.ok(Panel, "Seitenleisten-Seite ist angemeldet");
+
+    // kein Dienstplan eingerichtet
+    const none = new Panel();
+    none.hass = { states: { "calendar.privat": { attributes: {} } }, entities: {} };
+    assert.ok(text(none.shadowRoot).includes("Noch kein Dienstplan eingerichtet"));
+
+    // ein Dienstplan: nur Kalender dieser Integration zählen, die Karte bekommt hass
+    const { hass, calls } = setup();
+    hass.states["calendar.privat"] = { last_updated: "1", attributes: {} };
+    hass.entities = { "calendar.jenny": { platform: "dienstplan" }, "calendar.privat": { platform: "google" } };
+    const panel = new Panel();
+    panel.route = { path: "" };
+    panel.panel = {};
+    panel.hass = hass;
+    await settle();
+    const card = find(panel.shadowRoot, (n) => n.shadowRoot && n.constructor === Card);
+    assert.ok(card, "Karte steckt in der Seite");
+    assert.strictEqual(card._config.entity, "calendar.jenny");
+    assert.strictEqual(card._hass, hass);
+    assert.ok(calls.some((c) => c[0] === "ws"), "Karte lädt ihre Daten");
+    assert.ok(!find(panel.shadowRoot, (n) => n.tag === "select"), "bei einem Plan keine Auswahl");
+
+    // Menüknopf nur im schmalen Layout, löst das Öffnen der Seitenleiste aus
+    const menu = btn(panel.shadowRoot, (n) => n.className === "menu");
+    assert.strictEqual(menu.style.display, "none");
+    panel.narrow = true;
+    assert.strictEqual(menu.style.display, "");
+    let toggled = 0;
+    panel.addEventListener("hass-toggle-menu", () => toggled++);
+    menu.listeners.click();
+    assert.strictEqual(toggled, 1);
+
+    // ohne Registry fällt die Erkennung auf das Attribut today_shift zurück
+    const fallback = new Panel();
+    fallback.hass = { ...hass, entities: undefined };
+    assert.strictEqual(find(fallback.shadowRoot, (n) => n.shadowRoot && n.constructor === Card)._config.entity, "calendar.jenny");
+
+    // mehrere Pläne: Auswahl, Wechsel tauscht die Karte
+    const two = setup();
+    two.hass.states["calendar.max"] = { last_updated: "1", attributes: { today_shift: null, friendly_name: "Max" } };
+    two.hass.entities = { "calendar.jenny": { platform: "dienstplan" }, "calendar.max": { platform: "dienstplan" } };
+    const panel2 = new Panel();
+    panel2.hass = two.hass;
+    await settle();
+    const select = find(panel2.shadowRoot, (n) => n.tag === "select");
+    assert.ok(select, "Auswahl bei mehreren Plänen");
+    assert.deepStrictEqual(select.children.map((o) => o.value), ["calendar.jenny", "calendar.max"]);
+    select.listeners.change({ target: { value: "calendar.max" } });
+    await settle();
+    assert.strictEqual(find(panel2.shadowRoot, (n) => n.shadowRoot && n.constructor === Card)._config.entity, "calendar.max");
+    // Neuaufbau bei jedem hass-Update vermeiden: gleiche Liste -> gleiche Karte
+    const before = find(panel2.shadowRoot, (n) => n.shadowRoot && n.constructor === Card);
+    panel2.hass = { ...two.hass };
+    assert.strictEqual(find(panel2.shadowRoot, (n) => n.shadowRoot && n.constructor === Card), before);
+  }
+
+  // ---------- Absicherung: scheitert der Start, melden sich die Elemente trotzdem und nennen den Grund
+  {
+    const vm = require("vm");
+    const source = require("fs").readFileSync(CARD_FILE, "utf8");
+    const registry = {
+      _m: {},
+      _fail: true,
+      get(n) { return this._m[n]; },
+      define(n, c) {
+        if (this._fail && n === "dienstplan-card") {
+          this._fail = false;
+          throw new Error("kaputt");
+        }
+        this._m[n] = c;
+      },
+    };
+    const sandbox = { document: global.document, HTMLElement: global.HTMLElement, CustomEvent, customElements: registry, navigator: {}, console: { info() {}, error() {} } };
+    sandbox.window = sandbox;
+    vm.runInNewContext(source, sandbox);
+    for (const tag of ["dienstplan-card", "dienstplan-card-editor", "dienstplan-panel"]) {
+      assert.ok(registry.get(tag), `${tag} ist trotz Fehler angemeldet`);
+    }
+    const Broken = registry.get("dienstplan-card");
+    const broken = new Broken();
+    broken.setConfig({ entity: "calendar.x" });
+    broken.hass = {};
+    assert.strictEqual(broken.getCardSize(), 2);
+    broken.connectedCallback();
+    assert.ok(broken.textContent.includes("kaputt") && broken.textContent.includes("nicht starten"), broken.textContent);
+    assert.strictEqual(sandbox.customCards, undefined, "kein halb fertiger Zustand");
   }
 
   console.log("Karte: alle Prüfungen bestanden");
