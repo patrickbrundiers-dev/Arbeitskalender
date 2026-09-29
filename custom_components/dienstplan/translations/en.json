@@ -1,0 +1,82 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up shift plan",
+        "description": "One entry per person. Shifts, one per line, as `Code;Name;Start;End;Type;Color`. If `End` is earlier than `Start` the shift ends the next day (night shift). Without times an all-day event is created, type `frei` creates no event. Please double-check the times against the posted roster.\n\n{error}",
+        "data": {
+          "name": "Name",
+          "shifts": "Shifts",
+          "sync_calendar": "Also add events to this calendar (optional)"
+        },
+        "data_description": {
+          "sync_calendar": "e.g. Google Calendar or a local calendar. New and changed days are copied there."
+        }
+      }
+    },
+    "error": {
+      "invalid_shifts": "The shift definition contains an error (see hint above).",
+      "no_shifts": "Please define at least one shift.",
+      "sync_self": "Please choose a different calendar, not the shift plan itself."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Edit shift plan",
+        "description": "Shifts, one per line, as `Code;Name;Start;End;Type;Color`. Changes apply to days that are already entered.\n\n{error}",
+        "data": {
+          "shifts": "Shifts",
+          "sync_calendar": "Also add events to this calendar (optional)"
+        }
+      }
+    },
+    "error": {
+      "invalid_shifts": "The shift definition contains an error (see hint above).",
+      "no_shifts": "Please define at least one shift.",
+      "sync_self": "Please choose a different calendar, not the shift plan itself."
+    }
+  },
+  "exceptions": {
+    "unknown_shift": {
+      "message": "Unknown shift \"{shift}\". It is not defined in the shifts."
+    },
+    "invalid_range": {
+      "message": "Invalid range: the end date must not be before the start date (max. 366 days)."
+    }
+  },
+  "services": {
+    "set_shift": {
+      "name": "Set shift",
+      "description": "Enters a shift for a day or a range of days. Without a shift the entry is removed.",
+      "fields": {
+        "date": {
+          "name": "Date",
+          "description": "Day (or first day of the range)."
+        },
+        "end_date": {
+          "name": "End date",
+          "description": "Last day of the range (optional)."
+        },
+        "shift": {
+          "name": "Shift",
+          "description": "Shift code, e.g. F1. Leave empty to remove."
+        }
+      }
+    },
+    "set_shifts": {
+      "name": "Set multiple shifts",
+      "description": "Enters shifts for several days at once (date → code, empty = remove).",
+      "fields": {
+        "days": {
+          "name": "Days",
+          "description": "Mapping of date to shift code."
+        }
+      }
+    },
+    "sync": {
+      "name": "Sync",
+      "description": "Copies all days that have not been transferred yet to the target calendar."
+    }
+  }
+}

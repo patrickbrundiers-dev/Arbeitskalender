@@ -1,0 +1,13 @@
+{
+  "domain": "dienstplan",
+  "name": "Dienstplan",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["http", "frontend", "websocket_api", "calendar"],
+  "documentation": "https://github.com/patrickbrundiers-dev/Arbeitskalender",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/patrickbrundiers-dev/Arbeitskalender/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
