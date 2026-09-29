@@ -112,15 +112,18 @@
     .status.error { color: var(--error-color, #db4437); }
     .status.selectable { user-select: all; word-break: break-all; }
     .link-btn { font-size: .8em; padding: 4px 10px; min-height: 30px; }
-    .overlay {
-      position: fixed; inset: 0; z-index: 9; background: rgba(0,0,0,.5);
-      display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box;
+    /* Natives <dialog>: liegt in der "top layer" und wird nie von Karten, Sections oder Themes beschnitten */
+    dialog.overlay {
+      padding: 0; border: none; background: transparent; color: inherit; overflow: visible;
+      width: min(calc(100vw - 32px), 380px); max-width: none; max-height: none;
     }
+    dialog.overlay::backdrop { background: rgba(0,0,0,.5); }
     .dialog {
       background: var(--card-background-color, #fff); color: var(--primary-text-color);
-      border-radius: 14px; width: min(100%, 380px); max-height: 86vh; display: flex; flex-direction: column;
+      border-radius: 14px; width: 100%; max-height: 86vh; display: flex; flex-direction: column;
       padding: 14px 12px 12px; box-sizing: border-box; box-shadow: 0 8px 30px rgba(0,0,0,.35);
     }
+    .dialog:focus { outline: none; }
     .dlg-title { font-weight: 600; font-size: 1.05em; margin: 0 4px 8px; }
     .dlg-sub { font-size: .8em; color: var(--secondary-text-color); margin: 0 4px 6px; }
     .range { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 4px 8px; font-size: .85em; }
@@ -247,10 +250,22 @@
         this._loaded = true;
         this._error = "";
       } catch (err) {
-        this._error = (err && err.message) || "Dienstplan konnte nicht geladen werden.";
+        this._error = this._loadErrorText(err);
       }
       this._render();
       await this._loadHolidays(days[0], days[days.length - 1]);
+    }
+
+    // Klartext statt nackter Fehlercodes: sagt, woran es liegt
+    _loadErrorText(err) {
+      const code = err && err.code;
+      if (code === "unknown_command") {
+        return "Die Integration „Dienstplan“ ist nicht geladen. Bitte unter Einstellungen → Geräte & Dienste prüfen und Home Assistant neu starten.";
+      }
+      if (code === "not_found") {
+        return `„${this._config.entity}“ ist kein Dienstplan-Kalender (oder die Integration ist nicht geladen). Bitte die Entität der Karte prüfen.`;
+      }
+      return (err && err.message) || "Dienstplan konnte nicht geladen werden.";
     }
 
     async _loadHolidays(first, last) {
@@ -296,15 +311,21 @@
       return text;
     }
 
+    // Beginn und Ende in zwei Zeilen: passt auch in schmale Zellen (Handy) ohne abgeschnitten zu werden
     _cellTime(code) {
       const shift = this._shiftMap.get((code || "").toLowerCase());
-      return shift && shift.start && shift.end ? `${shortTime(shift.start)}–${shortTime(shift.end)}` : "";
+      if (!shift || !shift.start || !shift.end) return null;
+      return [shortTime(shift.start), `–${shortTime(shift.end)}`];
     }
 
     // ---------------------------------------------------------------- Aktionen
 
     _openDay(key) {
-      if (this._saving || !this._loaded) return;
+      if (this._saving) return;
+      if (!this._loaded) {
+        this._load(); // erneut versuchen; ein Fehler steht danach unter dem Kalender
+        return;
+      }
       this._dialog = { type: "day", key };
       this._rangeEnd = "";
       this._status = "";
@@ -312,7 +333,11 @@
     }
 
     _openWeek(monday) {
-      if (this._saving || !this._loaded) return;
+      if (this._saving) return;
+      if (!this._loaded) {
+        this._load();
+        return;
+      }
       this._dialog = { type: "week", monday };
       this._status = "";
       this._render();
@@ -463,7 +488,7 @@
       const current = this._days[key] || "";
       return h(
         "div",
-        { class: "dialog", role: "dialog", "aria-label": "Dienst wählen" },
+        { class: "dialog", role: "dialog", "aria-label": "Dienst wählen", tabindex: "-1", autofocus: true },
         h(
           "div",
           { class: "dlg-title" },
@@ -493,7 +518,7 @@
       const sunday = addDays(monday, 6);
       return h(
         "div",
-        { class: "dialog", role: "dialog", "aria-label": "Woche bearbeiten" },
+        { class: "dialog", role: "dialog", "aria-label": "Woche bearbeiten", tabindex: "-1", autofocus: true },
         h(
           "div",
           { class: "dlg-title" },
@@ -596,14 +621,15 @@
           if (this._holidays[key]) classes.push("holiday");
           const holiday = this._holidays[key] ? ` (${this._holidays[key]})` : "";
           const label = `${day.getDate()}. ${MONTHS[day.getMonth()]}${code ? ", " + code : ""}${holiday}`;
-          const time = showTimes && code ? this._cellTime(code) : "";
+          const time = showTimes && code ? this._cellTime(code) : null;
           cells.push(
             h(
               "button",
               { class: classes.join(" "), title: this._holidays[key] || null, "aria-label": label, onclick: () => this._openDay(key) },
               h("span", { class: "num" }, day.getDate()),
               code ? h("span", { class: "badge", style: `background:${this._colorFor(code)}` }, code) : null,
-              time ? h("span", { class: "time" }, time) : null
+              time ? h("span", { class: "time" }, time[0]) : null,
+              time ? h("span", { class: "time" }, time[1]) : null
             )
           );
         }
@@ -643,11 +669,17 @@
 
       const dialog = this._dialog
         ? h(
-            "div",
+            "dialog",
             {
               class: "overlay",
+              // Klick auf den abgedunkelten Hintergrund (Ziel ist das <dialog> selbst) schließt
               onclick: (ev) => {
                 if (ev.target === ev.currentTarget) this._close();
+              },
+              // Esc / Zurück-Geste: selbst schließen, damit der Zustand der Karte stimmt
+              oncancel: (ev) => {
+                ev.preventDefault();
+                this._close();
               },
             },
             this._dialog.type === "week" ? this._renderWeekDialog() : this._renderDayDialog()
@@ -658,6 +690,15 @@
         h("style", {}, STYLE),
         h("ha-card", {}, this._config.title ? h("div", { class: "title" }, this._config.title) : null, nav, grid, footer, dialog)
       );
+
+      if (dialog) {
+        try {
+          dialog.showModal();
+        } catch (err) {
+          // Karte (noch) nicht im DOM oder sehr alter Browser: ohne Modal-Ebene anzeigen
+          dialog.setAttribute("open", "");
+        }
+      }
     }
   }
 
@@ -712,9 +753,11 @@
     customElements.define("dienstplan-card-editor", DienstplanCardEditor);
   }
   window.customCards = window.customCards || [];
-  window.customCards.push({
-    type: "dienstplan-card",
-    name: "Dienstplan",
-    description: "Monatsansicht: Tag antippen, Schicht wählen – erzeugt Kalendertermine.",
-  });
+  if (!window.customCards.some((card) => card.type === "dienstplan-card")) {
+    window.customCards.push({
+      type: "dienstplan-card",
+      name: "Dienstplan",
+      description: "Monatsansicht: Tag antippen, Schicht wählen – erzeugt Kalendertermine.",
+    });
+  }
 })();

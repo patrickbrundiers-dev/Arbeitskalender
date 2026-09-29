@@ -18,6 +18,11 @@ class N {
   setAttribute(k, v) { this.attrs[k] = v; }
   addEventListener(e, f) { this.listeners[e] = f; }
   dispatchEvent(ev) { (this.listeners[ev.type] || (() => {}))(ev); }
+  showModal() {
+    if (this.tag !== "dialog") throw new Error("showModal nur auf <dialog>");
+    this.modal = true;
+    this.attrs.open = "";
+  }
 }
 global.window = global;
 global.document = { createElement: (t) => new N(t), createTextNode: (s) => ({ nodeType: 3, text: s }) };
@@ -251,6 +256,63 @@ const option = (root, label) => btn(overlay(root), (n) => n.className.includes("
     await settle();
     assert.ok(text(root()).includes("nichts eingetragen"));
     assert.strictEqual(svc().length, 2);
+  }
+
+  // ---------- Dialog ist ein natives <dialog> in der Modal-Ebene (wird nie von Karte/Section beschnitten)
+  {
+    const { card, hass, root } = setup();
+    card.hass = hass;
+    await settle();
+    cellByLabel(root(), "2. Oktober").listeners.click();
+    const dlg = overlay(root());
+    assert.strictEqual(dlg.tag, "dialog");
+    assert.strictEqual(dlg.modal, true, "showModal() wurde aufgerufen");
+    // Esc / Zurück-Geste schließt und verhindert das Standard-Schließen des Browsers
+    let prevented = false;
+    dlg.listeners.cancel({ preventDefault: () => { prevented = true; } });
+    assert.ok(prevented);
+    assert.strictEqual(overlay(root()), undefined);
+    // Wochen-Dialog ebenso
+    all(root()).filter((n) => n.className === "kw")[1].listeners.click();
+    assert.strictEqual(overlay(root()).tag, "dialog");
+    assert.strictEqual(overlay(root()).modal, true);
+  }
+  {
+    // Ohne showModal (sehr alter Browser / nicht im DOM) wird der Dialog trotzdem angezeigt
+    const { card, hass, root } = setup();
+    card.hass = hass;
+    await settle();
+    const proto = Object.getPrototypeOf(root());
+    const orig = proto.showModal;
+    proto.showModal = function () { throw new Error("InvalidStateError"); };
+    try {
+      cellByLabel(root(), "2. Oktober").listeners.click();
+      assert.strictEqual(overlay(root()).attrs.open, "", "Fallback setzt open");
+    } finally {
+      proto.showModal = orig;
+    }
+  }
+
+  // ---------- Ladefehler: Klartext, Tippen versucht es erneut
+  {
+    const { card, hass, root, calls } = setup();
+    hass.callWS = async (msg) => { calls.push(["ws", msg]); throw { code: "unknown_command", message: "Unknown command." }; };
+    card.hass = hass;
+    await settle();
+    assert.ok(text(root()).includes("Integration „Dienstplan“ ist nicht geladen"), text(root()));
+    assert.ok(find(root(), (n) => n.className === "status error"));
+    const before = calls.length;
+    cellByLabel(root(), "2. Oktober").listeners.click(); // Tippen: erneut laden statt still nichts tun
+    await settle();
+    assert.ok(calls.length > before, "erneuter Ladeversuch");
+    assert.strictEqual(overlay(root()), undefined, "ohne Daten kein Dialog");
+  }
+  {
+    const { card, hass, root } = setup();
+    hass.callWS = async () => { throw { code: "not_found", message: "Dienstplan-Kalender nicht gefunden" }; };
+    card.hass = hass;
+    await settle();
+    assert.ok(text(root()).includes("ist kein Dienstplan-Kalender") && text(root()).includes("calendar.jenny"), text(root()));
   }
 
   // ---------- Feiertage

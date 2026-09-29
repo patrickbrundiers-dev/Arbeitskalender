@@ -63,6 +63,17 @@ holidays: calendar.deutschland    # optional: Feiertagskalender
 - **Kalender-Link:** kopiert die Abo-Adresse (siehe unten).
 - **Feiertage:** als `holidays` einen Kalender angeben, z. B. aus der HA-Integration *Feiertage*. Feiertage erscheinen rot.
 
+### Karte erscheint nicht („Custom element doesn't exist: dienstplan-card“)
+
+Die Karte wird beim Start von der Integration bereitgestellt, aber vom Browser nur beim **Neuladen der Seite** abgeholt. Nach der ersten Einrichtung (oder einem Update) deshalb:
+
+1. **Handy-App:** *Einstellungen → Companion-App → Fehlerbehebung → Frontend-Cache zurücksetzen*, danach die App komplett schließen und neu öffnen.
+2. **Browser:** Seite hart neu laden (Strg+F5 bzw. Umschalt+Neu laden).
+3. **Prüfen, ob die Datei ausgeliefert wird:** `https://<deine-HA-Adresse>/dienstplan_static/dienstplan-card.js` im Browser öffnen. Es muss Programmtext erscheinen. Bei „404 Not Found“ ist die Integration nicht (vollständig) geladen bzw. der Ordner `frontend` fehlt in `custom_components/dienstplan/`.
+4. **Notlösung:** *Einstellungen → Dashboards → ⋮ → Ressourcen* (ggf. im Benutzerprofil den erweiterten Modus einschalten) → Ressource hinzufügen: URL `/dienstplan_static/dienstplan-card.js`, Typ *JavaScript-Modul*.
+
+Im Protokoll steht beim Start die Zeile „Dienstplan-Karte wird unter … bereitgestellt“.
+
 ## Sensoren
 
 | Sensor | Inhalt |

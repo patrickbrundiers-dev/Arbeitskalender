@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import voluptuous as vol
@@ -20,6 +21,8 @@ from .const import CARD_URL, DOMAIN, STORAGE_VERSION, VERSION, WS_GET_DAYS
 from .feed import DienstplanFeedView
 from .manager import DienstplanManager
 
+_LOGGER = logging.getLogger(__name__)
+
 PLATFORMS = [Platform.CALENDAR, Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -32,6 +35,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     card_path = Path(__file__).parent / "frontend" / "dienstplan-card.js"
     await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(card_path), False)])
     add_extra_js_url(hass, f"{CARD_URL}?v={VERSION}")
+    _LOGGER.info("Dienstplan-Karte wird unter %s bereitgestellt", CARD_URL)
     hass.http.register_view(DienstplanFeedView(hass))
     websocket_api.async_register_command(hass, ws_get_days)
     return True
