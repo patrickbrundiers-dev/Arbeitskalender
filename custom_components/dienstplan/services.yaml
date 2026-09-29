@@ -43,3 +43,23 @@ regenerate_link:
     entity:
       integration: dienstplan
       domain: calendar
+
+ask:
+  fields:
+    person:
+      required: false
+      example: "Jenny"
+      selector:
+        text:
+    day:
+      required: false
+      default: "heute"
+      example: "morgen"
+      selector:
+        text:
+    entity_id:
+      required: false
+      selector:
+        entity:
+          integration: dienstplan
+          domain: calendar

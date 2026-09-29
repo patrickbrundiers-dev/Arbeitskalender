@@ -12,21 +12,31 @@ from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
 from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import dt as dt_util
 
-from .const import CARD_URL, DOMAIN, STORAGE_VERSION, VERSION, WS_GET_DAYS
+from .const import CARD_URL, DOMAIN, SERVICE_ASK, STORAGE_VERSION, VERSION, WS_GET_DAYS
 from .feed import DienstplanFeedView
 from .manager import DienstplanManager
 from .resources import CREATED, UNSUPPORTED, UPDATED, async_ensure_resource, async_remove_resource
+from .voice import Person, answer, display_name
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.CALENDAR, Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+ASK_SCHEMA = vol.Schema(
+    {
+        vol.Optional("person", default=""): cv.string,
+        vol.Optional("day", default="heute"): cv.string,
+        vol.Optional("entity_id"): cv.entity_id,
+    }
+)
 
 DienstplanConfigEntry = ConfigEntry[DienstplanManager]
 
@@ -41,7 +51,27 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     await _async_sync_dashboard_resource(hass, present=True)
     hass.http.register_view(DienstplanFeedView(hass))
     websocket_api.async_register_command(hass, ws_get_days)
+    hass.services.async_register(
+        DOMAIN, SERVICE_ASK, _async_handle_ask, schema=ASK_SCHEMA, supports_response=SupportsResponse.ONLY
+    )
     return True
+
+
+async def _async_handle_ask(call: ServiceCall) -> dict:
+    """„Wie arbeitet Jenny morgen?“: fertiger deutscher Satz für Alexa, Assist oder Skripte."""
+    hass = call.hass
+    registry = er.async_get(hass)
+    wanted = call.data.get("entity_id")
+    people: list[Person] = []
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        manager = getattr(entry, "runtime_data", None)
+        if manager is None or entry.state is not ConfigEntryState.LOADED:
+            continue
+        entity_id = registry.async_get_entity_id("calendar", DOMAIN, entry.entry_id)
+        if wanted and entity_id != wanted:
+            continue
+        people.append(Person(display_name(entry.title), entity_id, manager.shift_on))
+    return answer(people, call.data.get("person", ""), call.data.get("day", "heute"), dt_util.now())
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: DienstplanConfigEntry) -> bool:

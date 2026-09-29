@@ -8,6 +8,7 @@ Dienste (Früh, Spät, Nacht …) pro Tag in einer Monatsansicht eintragen – d
 - **Kalender-Link (iCal)** zum Abonnieren in Google/Apple/Outlook, ohne dass Home Assistant dafür einen Kalender-Zugang braucht
 - **Stunden und Bilanz**: Wochenstunden, Soll/Ist, Urlaubstage und Resturlaub
 - **Sensoren** für Automationen: Dienst heute/morgen, nächster Dienstbeginn (z. B. für den Wecker)
+- **Sprachsteuerung**: „Wie arbeitet Jenny morgen?“ als fertiger deutscher Satz für Alexa, Assist oder Skripte (Service `dienstplan.ask`)
 - Nachtdienste über Mitternacht, Urlaub/Krank als Ganztagstermin, freie Tage ohne Termin
 
 ## Installation
@@ -104,6 +105,94 @@ actions:
       message: "Gleich geht der Dienst los"
 ```
 
+## Sprachsteuerung (Alexa, Assist)
+
+Grundlage ist der Service `dienstplan.ask`. Er gibt eine Antwort zurück, die man vorlesen lassen kann:
+
+```yaml
+action: dienstplan.ask
+data:
+  person: Jenny      # optional; leer = alle; bei nur einem Dienstplan ist der immer gemeint
+  day: morgen        # heute, morgen, übermorgen, gestern, Freitag, 2026-10-05, 5.10. oder "nächster"
+response_variable: antwort
+# antwort.speech -> "Jenny hat morgen Frühdienst 1, von 6 Uhr bis 14 Uhr."
+```
+
+- Der Name kommt aus dem Titel der Einrichtung; das Wort „Dienstplan“ davor wird weggelassen („Dienstplan Jenny“ → „Jenny“).
+- Mögliche Antworten: Dienst mit Uhrzeit (Nachtdienst: „bis 6 Uhr am nächsten Tag“), Urlaub, frei, krank/abwesend, „nichts eingetragen“. Vergangene Tage stehen in der Vergangenheit („hatte“).
+- `day: nächster` liefert den nächsten Arbeitsdienst („Jenny arbeitet als Nächstes am Samstag: …“). Urlaub, frei und krank zählen dabei nicht.
+- Person und Tag dürfen auch als ganzer Satz übergeben werden („Jenny übermorgen“, „wann arbeitet Jenny wieder“); Namen und Tageswörter werden herausgefunden. „Wer arbeitet heute?“ nennt bei mehreren Dienstplänen alle.
+- Zusätzlich liefert die Antwort `date` und `people` (Name, Kürzel, Dienst, Beginn, Ende, Stunden) für eigene Auswertungen.
+
+> **Stand:** Die Antwortsätze und der Service sind getestet. Mit einem echten Alexa-Gerät oder Assist habe ich es nicht ausprobiert. Die Anleitungen unten sind deshalb Vorlagen.
+
+### Assist (HA-App, Voice-Geräte)
+
+Eine Automation reicht (*Einstellungen → Automatisierungen → ⋮ → In YAML bearbeiten*). Sprache von Assist: Deutsch.
+
+```yaml
+alias: Dienstplan per Sprache
+triggers:
+  - trigger: conversation
+    command:
+      - "wie arbeitet {frage}"
+      - "wann arbeitet {frage}"
+      - "wer arbeitet {frage}"
+      - "arbeitet {frage}"
+      - "hat {frage} Dienst"
+      - "muss {frage} arbeiten"
+actions:
+  - action: dienstplan.ask
+    data:
+      person: "{{ trigger.slots.frage }}"
+      day: "{{ trigger.slots.frage }}"
+    response_variable: antwort
+  - set_conversation_response: "{{ antwort.speech }}"
+```
+
+Beispiele: „Wie arbeitet Jenny morgen?“, „Wann arbeitet sie wieder?“, „Wer arbeitet heute?“, „Hat Jenny am Freitag Dienst?“
+
+### Alexa
+
+Alexa kann von sich aus keine frei berechneten Antworten aus Home Assistant vorlesen. Es gibt drei Wege:
+
+1. **Ohne Einrichtung in Home Assistant: über den Kalender.** Den Abgleich in einen Google-Kalender nutzen (siehe unten) und diesen Kalender in der Alexa-App verknüpfen (*Einstellungen → Kalender & E-Mail*). Dann funktioniert „Alexa, was steht heute in meinem Kalender?“ und „Alexa, wann ist mein nächster Termin?“; die Dienste stehen als Termine dort (z. B. „Frühdienst 1“ um 6 Uhr). Wichtig: Es wird der Kalender des verknüpften Kontos vorgelesen, nicht „Jennys Dienst“ als Person.
+2. **Frei formulierte Fragen über Alexa-Routinen und Alexa Media Player.** Voraussetzungen: die HACS-Integration *Alexa Media Player* und ein Zugang, über den Alexa Home-Assistant-Skripte auslösen kann (Nabu-Casa-Cloud oder eigener Smart-Home-Skill; das Skript erscheint in Alexa als Szene). Skript in Home Assistant (den Namen des Echo-Geräts anpassen):
+
+   ```yaml
+   script:
+     dienst_heute_ansagen:
+       alias: Dienst heute ansagen
+       sequence:
+         - action: dienstplan.ask
+           data:
+             day: heute
+           response_variable: antwort
+         - action: notify.alexa_media_wohnzimmer
+           data:
+             message: "{{ antwort.speech }}"
+             data:
+               type: tts
+   ```
+
+   In der Alexa-App unter *Routinen*: Auslöser *Sprache* „Wie arbeitet Jenny heute“, Aktion *Smart Home → Szene* „Dienst heute ansagen“. Ein Skript pro Frage (heute, morgen, „nächster“). Die Antwort kommt mit ein paar Sekunden Verzögerung.
+3. **Eigener Alexa-Skill (nur für Bastler).** Ein Skill mit dem Aufrufnamen „Dienstplan“ und einer Absicht `DienstplanFrageIntent` mit einem Platzhalter `Frage` (Typ `AMAZON.SearchQuery`, Beispielsatz „wie arbeitet {Frage}“) kann Home Assistant direkt antworten lassen („Alexa, frage Dienstplan, wie arbeitet Jenny morgen“). Einrichtung: Amazon-Entwicklerkonto und die Home-Assistant-Anleitung *Amazon Alexa Custom Skill*. In Home Assistant:
+
+   ```yaml
+   intent_script:
+     DienstplanFrageIntent:
+       action:
+         - action: dienstplan.ask
+           data:
+             person: "{{ Frage }}"
+             day: "{{ Frage }}"
+           response_variable: antwort
+         - stop: ""
+           response_variable: antwort
+       speech:
+         text: "{{ action_response.speech }}"
+   ```
+
 ## Kalender-Link (iCal)
 
 Die Kalender-Entität hat das Attribut `ical_url`; die Karte kopiert es über den Knopf *Kalender-Link*. In Google Kalender: *Weitere Kalender → Per URL*, in Apple Kalender: *Ablage → Neues Kalenderabonnement*.
@@ -129,6 +218,7 @@ Unter *Konfigurieren* einen Kalender bei *Zusätzlich in diesen Kalender eintrag
 | `dienstplan.set_shifts` | Mehrere Tage auf einmal (`days: {"2026-10-05": "F1", …}`) |
 | `dienstplan.sync` | Alle noch nicht übertragenen oder geänderten Tage in den Ziel-Kalender schreiben |
 | `dienstplan.regenerate_link` | Neuen iCal-Link erzeugen |
+| `dienstplan.ask` | Antwort auf „Wie arbeitet … ?“ als Satz zurückgeben (siehe Sprachsteuerung) |
 
 Alle Services richten sich an die Kalender-Entität (`target: entity_id`).
 
@@ -144,6 +234,7 @@ data:
 
 ## Bekannte Grenzen
 
+- Die Sprachsteuerung ist mit Testdaten geprüft, nicht mit einem echten Alexa-Gerät.
 - Die Integration wurde ohne laufende Home-Assistant-Instanz entwickelt. Die Logik (Zeiten, Abgleich, Stunden, Feed) und die Karte sind mit eigenen Tests geprüft, die Einrichtung in Home Assistant selbst noch nicht. Fehler bitte als Issue melden.
 - Stunden werden ohne Pausenabzug berechnet, sofern bei `Std` nichts angegeben ist.
 - Feiertage werden nur markiert, nicht in die Stunden eingerechnet.
@@ -153,7 +244,7 @@ data:
 ```
 python -m pytest tests -q          # Dienste, Stunden, iCal
 python tests/check_manager.py      # Manager/Abgleich mit Home-Assistant-Stubs
-python tests/check_setup.py        # Einrichtung: Karte ausliefern, Dashboard-Ressource
+python tests/check_setup.py        # Einrichtung: Karte ausliefern, Dashboard-Ressource, Service ask
 node tests/card.test.js            # Karte mit Mini-DOM
 ```
 

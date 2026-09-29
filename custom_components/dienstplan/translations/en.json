@@ -45,13 +45,27 @@
   },
   "entity": {
     "sensor": {
-      "shift_today": { "name": "Shift today" },
-      "shift_tomorrow": { "name": "Shift tomorrow" },
-      "next_shift_start": { "name": "Next shift start" },
-      "hours_week": { "name": "Hours this week" },
-      "balance_week": { "name": "Weekly balance" },
-      "vacation_taken": { "name": "Vacation taken" },
-      "vacation_left": { "name": "Vacation left" }
+      "shift_today": {
+        "name": "Shift today"
+      },
+      "shift_tomorrow": {
+        "name": "Shift tomorrow"
+      },
+      "next_shift_start": {
+        "name": "Next shift start"
+      },
+      "hours_week": {
+        "name": "Hours this week"
+      },
+      "balance_week": {
+        "name": "Weekly balance"
+      },
+      "vacation_taken": {
+        "name": "Vacation taken"
+      },
+      "vacation_left": {
+        "name": "Vacation left"
+      }
     }
   },
   "exceptions": {
@@ -98,6 +112,24 @@
     "regenerate_link": {
       "name": "Renew calendar link",
       "description": "Creates a new subscription link (iCal). The previous link stops working."
+    },
+    "ask": {
+      "name": "Ask for a shift",
+      "description": "Answers “How is Jenny working tomorrow?” as a ready-made German sentence (to be spoken by Alexa, Assist or scripts). Returns a response with “speech”, “date” and “people”.",
+      "fields": {
+        "person": {
+          "name": "Person",
+          "description": "Name of the person (empty = everyone). With a single shift plan that plan is always meant."
+        },
+        "day": {
+          "name": "Day",
+          "description": "heute, morgen, übermorgen, gestern, a weekday, a date (2026-10-05 or 5.10.) or “nächster” for the next shift."
+        },
+        "entity_id": {
+          "name": "Shift plan calendar",
+          "description": "Only ask this shift plan (optional)."
+        }
+      }
     }
   }
 }

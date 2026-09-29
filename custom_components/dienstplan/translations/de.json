@@ -45,13 +45,27 @@
   },
   "entity": {
     "sensor": {
-      "shift_today": { "name": "Dienst heute" },
-      "shift_tomorrow": { "name": "Dienst morgen" },
-      "next_shift_start": { "name": "Nächster Dienstbeginn" },
-      "hours_week": { "name": "Stunden diese Woche" },
-      "balance_week": { "name": "Wochenbilanz" },
-      "vacation_taken": { "name": "Urlaub genommen" },
-      "vacation_left": { "name": "Resturlaub" }
+      "shift_today": {
+        "name": "Dienst heute"
+      },
+      "shift_tomorrow": {
+        "name": "Dienst morgen"
+      },
+      "next_shift_start": {
+        "name": "Nächster Dienstbeginn"
+      },
+      "hours_week": {
+        "name": "Stunden diese Woche"
+      },
+      "balance_week": {
+        "name": "Wochenbilanz"
+      },
+      "vacation_taken": {
+        "name": "Urlaub genommen"
+      },
+      "vacation_left": {
+        "name": "Resturlaub"
+      }
     }
   },
   "exceptions": {
@@ -98,6 +112,24 @@
     "regenerate_link": {
       "name": "Kalender-Link erneuern",
       "description": "Erzeugt einen neuen Abo-Link (iCal). Der bisherige Link funktioniert danach nicht mehr."
+    },
+    "ask": {
+      "name": "Dienst erfragen",
+      "description": "Beantwortet „Wie arbeitet Jenny morgen?“ als fertigen deutschen Satz (zum Vorlesen über Alexa, Assist oder Skripte). Liefert eine Antwort mit „speech“, „date“ und „people“ zurück.",
+      "fields": {
+        "person": {
+          "name": "Person",
+          "description": "Name der Person (leer = alle). Bei nur einem Dienstplan ist dieser immer gemeint."
+        },
+        "day": {
+          "name": "Tag",
+          "description": "heute, morgen, übermorgen, gestern, ein Wochentag, ein Datum (2026-10-05 oder 5.10.) oder „nächster“ für den nächsten Dienst."
+        },
+        "entity_id": {
+          "name": "Dienstplan-Kalender",
+          "description": "Nur diesen Dienstplan befragen (optional)."
+        }
+      }
     }
   }
 }

@@ -1,7 +1,7 @@
 """Konstanten für die Dienstplan-Integration."""
 
 DOMAIN = "dienstplan"
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 CONF_NAME = "name"
 CONF_SHIFTS = "shifts"
@@ -17,6 +17,7 @@ SERVICE_SET_SHIFT = "set_shift"
 SERVICE_SET_SHIFTS = "set_shifts"
 SERVICE_SYNC = "sync"
 SERVICE_REGENERATE_LINK = "regenerate_link"
+SERVICE_ASK = "ask"
 
 WS_GET_DAYS = f"{DOMAIN}/get_days"
 
