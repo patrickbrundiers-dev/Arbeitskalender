@@ -10,12 +10,12 @@ from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv, entity_platform
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import DienstplanConfigEntry
-from .const import DOMAIN, SERVICE_SET_SHIFT, SERVICE_SET_SHIFTS, SERVICE_SYNC
+from .const import DOMAIN, SERVICE_REGENERATE_LINK, SERVICE_SET_SHIFT, SERVICE_SET_SHIFTS, SERVICE_SYNC
+from .entity import device_info
 from .manager import DienstplanManager
 
 SCAN_INTERVAL = timedelta(minutes=1)
@@ -46,6 +46,7 @@ async def async_setup_entry(
         "async_set_shifts",
     )
     platform.async_register_entity_service(SERVICE_SYNC, None, "async_sync_now")
+    platform.async_register_entity_service(SERVICE_REGENERATE_LINK, None, "async_regenerate_link")
 
 
 class DienstplanCalendar(CalendarEntity):
@@ -54,16 +55,13 @@ class DienstplanCalendar(CalendarEntity):
     _attr_has_entity_name = True
     _attr_name = "Dienstplan"
     _attr_should_poll = True  # Beginn/Ende eines Dienstes ändert den Zustand (an/aus)
+    # Der Link enthält den geheimen Token: nicht in der Datenbank/im Verlauf speichern
+    _unrecorded_attributes = frozenset({"ical_url"})
 
     def __init__(self, entry: DienstplanConfigEntry) -> None:
         self.manager: DienstplanManager = entry.runtime_data
         self._attr_unique_id = entry.entry_id
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="Dienstplan",
-            entry_type=DeviceEntryType.SERVICE,
-        )
+        self._attr_device_info = device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(self.manager.async_add_listener(self.async_write_ha_state))
@@ -82,6 +80,7 @@ class DienstplanCalendar(CalendarEntity):
             attrs[f"{label}_shift"] = shift.code if shift else None
             attrs[f"{label}_shift_name"] = shift.name if shift else None
         attrs["sync_calendar"] = self.manager.sync_calendar
+        attrs["ical_url"] = self.manager.feed_url()
         return attrs
 
     async def async_get_events(
@@ -106,3 +105,7 @@ class DienstplanCalendar(CalendarEntity):
     async def async_sync_now(self) -> None:
         """Alle Tage mit dem Ziel-Kalender abgleichen."""
         await self.manager.async_sync()
+
+    async def async_regenerate_link(self) -> None:
+        """Neuen iCal-Link erzeugen (der alte wird ungültig)."""
+        await self.manager.async_regenerate_token()

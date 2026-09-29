@@ -3,13 +3,17 @@
     "step": {
       "user": {
         "title": "Dienstplan einrichten",
-        "description": "Ein Eintrag pro Person. Dienste zeilenweise im Format `Code;Name;Start;Ende;Typ;Farbe`. Ist `Ende` früher als `Start`, endet der Dienst am Folgetag (Nachtdienst). Ohne Zeiten entsteht ein Ganztagstermin, Typ `frei` erzeugt keinen Termin. Bitte die Zeiten mit dem Aushang abgleichen.\n\n{error}",
+        "description": "Ein Eintrag pro Person. Dienste zeilenweise im Format `Code;Name;Start;Ende;Typ;Farbe;Std`. Ist `Ende` früher als `Start`, endet der Dienst am Folgetag (Nachtdienst). Ohne Zeiten entsteht ein Ganztagstermin. Typ: leer = Dienst, `urlaub`, `abwesend` (z. B. krank) oder `frei` (kein Termin). `Std` = bezahlte Stunden (z. B. 6,5), sonst die Dauer von Start bis Ende. Bitte alle Zeiten mit dem Aushang abgleichen.\n\n{error}",
         "data": {
           "name": "Name",
           "shifts": "Dienste",
+          "weekly_hours": "Wochensoll in Stunden (optional)",
+          "vacation_days": "Urlaubstage pro Jahr (optional)",
           "sync_calendar": "Zusätzlich in diesen Kalender eintragen (optional)"
         },
         "data_description": {
+          "weekly_hours": "Für die Wochenbilanz. Urlaub und Krankheit an Werktagen zählen mit Soll/5 Stunden.",
+          "vacation_days": "Für den Resturlaub. Gezählt werden Urlaubstage von Montag bis Freitag.",
           "sync_calendar": "z. B. Google Kalender oder ein lokaler Kalender. Neue und geänderte Tage werden dorthin übertragen."
         }
       }
@@ -24,9 +28,11 @@
     "step": {
       "init": {
         "title": "Dienstplan bearbeiten",
-        "description": "Dienste zeilenweise im Format `Code;Name;Start;Ende;Typ;Farbe`. Änderungen wirken auf bereits eingetragene Tage.\n\n{error}",
+        "description": "Dienste zeilenweise im Format `Code;Name;Start;Ende;Typ;Farbe;Std`. Geänderte Zeiten oder Namen werden im Ziel-Kalender automatisch aktualisiert.\n\n{error}",
         "data": {
           "shifts": "Dienste",
+          "weekly_hours": "Wochensoll in Stunden (optional)",
+          "vacation_days": "Urlaubstage pro Jahr (optional)",
           "sync_calendar": "Zusätzlich in diesen Kalender eintragen (optional)"
         }
       }
@@ -35,6 +41,17 @@
       "invalid_shifts": "Die Dienstdefinition enthält einen Fehler (siehe Hinweis oben).",
       "no_shifts": "Bitte mindestens einen Dienst angeben.",
       "sync_self": "Bitte einen anderen Kalender wählen, nicht den Dienstplan selbst."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "shift_today": { "name": "Dienst heute" },
+      "shift_tomorrow": { "name": "Dienst morgen" },
+      "next_shift_start": { "name": "Nächster Dienstbeginn" },
+      "hours_week": { "name": "Stunden diese Woche" },
+      "balance_week": { "name": "Wochenbilanz" },
+      "vacation_taken": { "name": "Urlaub genommen" },
+      "vacation_left": { "name": "Resturlaub" }
     }
   },
   "exceptions": {
@@ -76,7 +93,11 @@
     },
     "sync": {
       "name": "Abgleichen",
-      "description": "Überträgt alle noch nicht übertragenen Tage in den Ziel-Kalender."
+      "description": "Überträgt alle noch nicht übertragenen oder geänderten Tage in den Ziel-Kalender."
+    },
+    "regenerate_link": {
+      "name": "Kalender-Link erneuern",
+      "description": "Erzeugt einen neuen Abo-Link (iCal). Der bisherige Link funktioniert danach nicht mehr."
     }
   }
 }

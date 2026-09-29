@@ -2,7 +2,7 @@
 
 Eine Dienstdefinition ist eine Zeile im Format::
 
-    Code;Name;Start;Ende;Typ;Farbe
+    Code;Name;Start;Ende;Typ;Farbe;Std
 
 * ``Code``   – Kürzel wie im Dienstplan (z. B. ``F1``, ``S2``, ``N1``, ``U``)
 * ``Name``   – Bezeichnung des Kalendertermins (z. B. ``Frühdienst 1``)
@@ -10,8 +10,11 @@ Eine Dienstdefinition ist eine Zeile im Format::
   Liegt ``Ende`` vor oder gleich ``Start``, endet der Dienst am Folgetag
   (Nachtdienst).
 * ``Typ``    – optional: ``frei`` = kein Kalendereintrag (z. B. ``X``),
-  ``abwesend`` = Ganztagstermin (z. B. Urlaub/Krank). Ohne Angabe: Dienst.
+  ``urlaub`` = Ganztagstermin, zählt als Urlaubstag,
+  ``abwesend`` = Ganztagstermin (z. B. Krank). Ohne Angabe: Dienst.
 * ``Farbe``  – optional: ``#RRGGBB`` für die Karte.
+* ``Std``    – optional: bezahlte Stunden des Dienstes (z. B. ``6,5``).
+  Ohne Angabe wird die Dauer zwischen Start und Ende verwendet.
 
 Leere Zeilen und Zeilen, die mit ``#`` beginnen, werden ignoriert.
 """
@@ -26,12 +29,21 @@ KIND_TIMED = "timed"
 KIND_ALLDAY = "allday"
 KIND_OFF = "off"
 
+CAT_WORK = "work"
+CAT_ABSENCE = "absence"
+CAT_VACATION = "vacation"
+CAT_OFF = "off"
+
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_HOURS_RE = re.compile(r"^\d{1,2}([.,]\d{1,2})?$")
 
 TYPE_OFF = {"frei", "off"}
-TYPE_ALLDAY = {"abwesend", "ganztag", "allday"}
+TYPE_VACATION = {"urlaub", "vacation"}
+TYPE_ABSENCE = {"abwesend", "ganztag", "allday"}
 TYPE_SHIFT = {"", "dienst", "shift"}
+
+MAX_FIELDS = 7
 
 
 class ShiftParseError(ValueError):
@@ -53,11 +65,33 @@ class Shift:
     end: time | None
     kind: str
     color: str | None = None
+    hours: float | None = None  # explizit angegebene Stunden
+    category: str = CAT_WORK
 
     @property
     def creates_event(self) -> bool:
         """Ob für diesen Dienst ein Kalendertermin entsteht."""
         return self.kind != KIND_OFF
+
+    @property
+    def effective_hours(self) -> float | None:
+        """Stunden des Dienstes (explizit oder aus Start/Ende)."""
+        if self.category != CAT_WORK:
+            return None
+        if self.hours is not None:
+            return self.hours
+        if self.start is None or self.end is None:
+            return None
+        minutes = (self.end.hour * 60 + self.end.minute) - (self.start.hour * 60 + self.start.minute)
+        if minutes <= 0:
+            minutes += 24 * 60
+        return round(minutes / 60, 2)
+
+    def signature(self) -> str:
+        """Kennung des Termininhalts, um geänderte Definitionen zu erkennen."""
+        start = self.start.strftime("%H:%M") if self.start else ""
+        end = self.end.strftime("%H:%M") if self.end else ""
+        return f"{self.code}|{self.name}|{start}|{end}|{self.kind}"
 
     def as_dict(self) -> dict:
         """Für die Karte (Websocket)."""
@@ -67,7 +101,9 @@ class Shift:
             "start": self.start.strftime("%H:%M") if self.start else None,
             "end": self.end.strftime("%H:%M") if self.end else None,
             "kind": self.kind,
+            "category": self.category,
             "color": self.color,
+            "hours": self.effective_hours,
         }
 
 
@@ -81,6 +117,15 @@ def _parse_time(value: str, line_no: int) -> time:
     return time(hour, minute)
 
 
+def _parse_hours(value: str, line_no: int) -> float:
+    if not _HOURS_RE.match(value):
+        raise ShiftParseError(line_no, f"Stunden „{value}“ ungültig (erwartet z. B. 6,5)")
+    hours = float(value.replace(",", "."))
+    if hours > 24:
+        raise ShiftParseError(line_no, f"Stunden „{value}“ ungültig (max. 24)")
+    return hours
+
+
 def parse_shifts(text: str) -> dict[str, Shift]:
     """Dienstdefinitionen aus Text lesen (Reihenfolge bleibt erhalten)."""
     shifts: dict[str, Shift] = {}
@@ -89,10 +134,10 @@ def parse_shifts(text: str) -> dict[str, Shift]:
         if not line or line.startswith("#"):
             continue
         parts = [p.strip() for p in line.split(";")]
-        if len(parts) > 6:
-            raise ShiftParseError(line_no, "zu viele Felder (max. 6)")
-        parts += [""] * (6 - len(parts))
-        code, name, start_s, end_s, type_s, color_s = parts
+        if len(parts) > MAX_FIELDS:
+            raise ShiftParseError(line_no, f"zu viele Felder (max. {MAX_FIELDS})")
+        parts += [""] * (MAX_FIELDS - len(parts))
+        code, name, start_s, end_s, type_s, color_s, hours_s = parts
 
         if not code:
             raise ShiftParseError(line_no, "Code fehlt")
@@ -107,15 +152,17 @@ def parse_shifts(text: str) -> dict[str, Shift]:
 
         type_key = type_s.casefold()
         if type_key in TYPE_OFF:
-            kind = KIND_OFF
-        elif type_key in TYPE_ALLDAY:
-            kind = KIND_ALLDAY
+            category, kind = CAT_OFF, KIND_OFF
+        elif type_key in TYPE_VACATION:
+            category, kind = CAT_VACATION, KIND_ALLDAY
+        elif type_key in TYPE_ABSENCE:
+            category, kind = CAT_ABSENCE, KIND_ALLDAY
         elif type_key in TYPE_SHIFT:
-            kind = KIND_TIMED if start else KIND_ALLDAY
+            category, kind = CAT_WORK, (KIND_TIMED if start else KIND_ALLDAY)
         else:
-            raise ShiftParseError(line_no, f"Typ „{type_s}“ unbekannt (frei, abwesend oder leer)")
+            raise ShiftParseError(line_no, f"Typ „{type_s}“ unbekannt (frei, urlaub, abwesend oder leer)")
 
-        if kind == KIND_ALLDAY:
+        if kind != KIND_TIMED:
             start = end = None
 
         color: str | None = None
@@ -124,7 +171,11 @@ def parse_shifts(text: str) -> dict[str, Shift]:
                 raise ShiftParseError(line_no, f"Farbe „{color_s}“ ungültig (erwartet #RRGGBB)")
             color = color_s.lower()
 
-        shifts[code] = Shift(code, name or code, start, end, kind, color)
+        hours = _parse_hours(hours_s, line_no) if hours_s else None
+        if category != CAT_WORK:
+            hours = None
+
+        shifts[code] = Shift(code, name or code, start, end, kind, color, hours, category)
     return shifts
 
 
@@ -158,25 +209,46 @@ def event_bounds(shift: Shift, day: date, tz: tzinfo) -> tuple[date, date] | tup
     return start, end
 
 
+_CATEGORY_TYPE = {CAT_OFF: "frei", CAT_VACATION: "urlaub", CAT_ABSENCE: "abwesend", CAT_WORK: ""}
+
+
 def shifts_to_text(shifts: dict[str, Shift]) -> str:
     """Dienste wieder in das Textformat bringen."""
     lines = []
     for shift in shifts.values():
-        start = shift.start.strftime("%H:%M") if shift.start else ""
-        end = shift.end.strftime("%H:%M") if shift.end else ""
-        kind = {KIND_OFF: "frei", KIND_ALLDAY: "abwesend" if not shift.start else ""}.get(shift.kind, "")
-        parts = [shift.code, shift.name, start, end, kind, shift.color or ""]
+        parts = [
+            shift.code,
+            shift.name,
+            shift.start.strftime("%H:%M") if shift.start else "",
+            shift.end.strftime("%H:%M") if shift.end else "",
+            _CATEGORY_TYPE[shift.category],
+            shift.color or "",
+            f"{shift.hours:g}".replace(".", ",") if shift.hours is not None else "",
+        ]
         while parts and parts[-1] == "":
             parts.pop()
         lines.append(";".join(parts))
     return "\n".join(lines)
 
 
-# Platzhalter-Zeiten: bitte mit dem Aushang abgleichen!
+# Aus dem Foto der Legende gelesen. Sicher lesbar waren nur die Stunden
+# (F1 6,5 / F2 6 / F3 4 und S1 6,5 / S2 6 / S3 4); die Uhrzeiten sind daraus
+# abgeleitet und müssen mit dem Aushang abgeglichen werden. Dienste ohne Zeiten
+# (F, S, F4, S4) erzeugen zunächst Ganztagstermine.
 DEFAULT_SHIFTS_TEXT = "\n".join(
-    [f"F{i};Frühdienst {i};06:00;14:00" for i in range(1, 6)]
-    + [f"Z{i};Zwischendienst {i};10:00;18:00" for i in range(1, 6)]
-    + [f"S{i};Spätdienst {i};13:00;21:00" for i in range(1, 6)]
-    + [f"N{i};Nachtdienst {i};21:00;06:00" for i in range(1, 6)]
-    + ["U;Urlaub;;;abwesend", "K;Krank;;;abwesend", "X;Frei;;;frei"]
+    [
+        "F;Frühdienst",
+        "F1;Frühdienst 1;06:30;13:00;;;6,5",
+        "F2;Frühdienst 2;07:00;13:00;;;6",
+        "F3;Frühdienst 3;07:00;11:00;;;4",
+        "F4;Frühdienst 4",
+        "S;Spätdienst",
+        "S1;Spätdienst 1;13:30;20:00;;;6,5",
+        "S2;Spätdienst 2;14:00;20:00;;;6",
+        "S3;Spätdienst 3;17:00;21:00;;;4",
+        "S4;Spätdienst 4",
+        "U;Urlaub;;;urlaub",
+        "K;Krank;;;abwesend",
+        "X;Frei;;;frei",
+    ]
 )

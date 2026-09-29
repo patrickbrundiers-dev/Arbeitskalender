@@ -3,13 +3,17 @@
     "step": {
       "user": {
         "title": "Set up shift plan",
-        "description": "One entry per person. Shifts, one per line, as `Code;Name;Start;End;Type;Color`. If `End` is earlier than `Start` the shift ends the next day (night shift). Without times an all-day event is created, type `frei` creates no event. Please double-check the times against the posted roster.\n\n{error}",
+        "description": "One entry per person. Shifts, one per line, as `Code;Name;Start;End;Type;Color;Hours`. If `End` is earlier than `Start` the shift ends the next day (night shift). Without times an all-day event is created. Type: empty = shift, `urlaub` (vacation), `abwesend` (absent, e.g. sick) or `frei` (no event). `Hours` = paid hours (e.g. 6.5), otherwise the duration from start to end. Please double-check all times against the posted roster.\n\n{error}",
         "data": {
           "name": "Name",
           "shifts": "Shifts",
+          "weekly_hours": "Weekly target hours (optional)",
+          "vacation_days": "Vacation days per year (optional)",
           "sync_calendar": "Also add events to this calendar (optional)"
         },
         "data_description": {
+          "weekly_hours": "For the weekly balance. Vacation and sick days on weekdays count as target/5 hours.",
+          "vacation_days": "For the remaining vacation. Vacation days from Monday to Friday are counted.",
           "sync_calendar": "e.g. Google Calendar or a local calendar. New and changed days are copied there."
         }
       }
@@ -24,9 +28,11 @@
     "step": {
       "init": {
         "title": "Edit shift plan",
-        "description": "Shifts, one per line, as `Code;Name;Start;End;Type;Color`. Changes apply to days that are already entered.\n\n{error}",
+        "description": "Shifts, one per line, as `Code;Name;Start;End;Type;Color;Hours`. Changed times or names are updated in the target calendar automatically.\n\n{error}",
         "data": {
           "shifts": "Shifts",
+          "weekly_hours": "Weekly target hours (optional)",
+          "vacation_days": "Vacation days per year (optional)",
           "sync_calendar": "Also add events to this calendar (optional)"
         }
       }
@@ -35,6 +41,17 @@
       "invalid_shifts": "The shift definition contains an error (see hint above).",
       "no_shifts": "Please define at least one shift.",
       "sync_self": "Please choose a different calendar, not the shift plan itself."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "shift_today": { "name": "Shift today" },
+      "shift_tomorrow": { "name": "Shift tomorrow" },
+      "next_shift_start": { "name": "Next shift start" },
+      "hours_week": { "name": "Hours this week" },
+      "balance_week": { "name": "Weekly balance" },
+      "vacation_taken": { "name": "Vacation taken" },
+      "vacation_left": { "name": "Vacation left" }
     }
   },
   "exceptions": {
@@ -76,7 +93,11 @@
     },
     "sync": {
       "name": "Sync",
-      "description": "Copies all days that have not been transferred yet to the target calendar."
+      "description": "Copies all days that have not been transferred yet or have changed to the target calendar."
+    },
+    "regenerate_link": {
+      "name": "Renew calendar link",
+      "description": "Creates a new subscription link (iCal). The previous link stops working."
     }
   }
 }

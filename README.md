@@ -2,11 +2,13 @@
 
 Dienste (Früh, Spät, Nacht …) pro Tag in einer Monatsansicht eintragen – daraus entstehen automatisch Kalendertermine.
 
-- **Kalender-Entität** pro Person (`calendar.<name>_dienstplan`), sichtbar im HA-Kalender
-- **Karte** zum Eintragen: Dienst wählen, Tage antippen, speichern
-- **Optionaler Abgleich** in einen anderen Kalender (Google, lokaler Kalender, CalDAV …), damit die Termine auch auf dem Handy erscheinen
+- **Kalender** pro Person (`calendar.<name>_dienstplan`), sichtbar im HA-Kalender
+- **Karte**: Tag antippen → Schicht wählen (auch für einen Zeitraum), Woche antippen → mehrere Tage auf einmal setzen oder Woche kopieren, Wischen wechselt den Monat, Feiertage markiert
+- **Abgleich** in einen anderen Kalender (Google, lokaler Kalender, CalDAV …); geänderte Uhrzeiten werden automatisch nachgezogen
+- **Kalender-Link (iCal)** zum Abonnieren in Google/Apple/Outlook, ohne dass Home Assistant dafür einen Kalender-Zugang braucht
+- **Stunden und Bilanz**: Wochenstunden, Soll/Ist, Urlaubstage und Resturlaub
+- **Sensoren** für Automationen: Dienst heute/morgen, nächster Dienstbeginn (z. B. für den Wecker)
 - Nachtdienste über Mitternacht, Urlaub/Krank als Ganztagstermin, freie Tage ohne Termin
-- Attribute `today_shift`, `tomorrow_shift` (und `_name`) für Automationen, z. B. Wecker oder Licht
 
 ## Installation
 
@@ -14,48 +16,95 @@ Dienste (Früh, Spät, Nacht …) pro Tag in einer Monatsansicht eintragen – d
 
 **Manuell:** Ordner `custom_components/dienstplan` nach `config/custom_components/` kopieren, neu starten.
 
-Danach: *Einstellungen → Geräte & Dienste → Integration hinzufügen → Dienstplan*.
+Danach: *Einstellungen → Geräte & Dienste → Integration hinzufügen → Dienstplan*. Voraussetzung: Home Assistant 2024.11 oder neuer.
 
 ## Dienste festlegen
 
-Ein Dienst pro Zeile: `Code;Name;Start;Ende;Typ;Farbe`
+Ein Dienst pro Zeile: `Code;Name;Start;Ende;Typ;Farbe;Std`
 
 | Feld | Bedeutung |
 |------|-----------|
 | Code | Kürzel wie im Dienstplan, z. B. `F1`, `S2`, `N1`, `U` |
 | Name | Titel des Kalendertermins |
 | Start / Ende | `HH:MM`. Ende früher als Start = Dienst endet am Folgetag. Beide leer = Ganztagstermin |
-| Typ | leer = normaler Dienst, `abwesend` = Ganztagstermin (Urlaub, Krank), `frei` = **kein** Termin |
+| Typ | leer = Dienst, `urlaub` = Ganztagstermin und zählt als Urlaubstag, `abwesend` = Ganztagstermin (z. B. Krank), `frei` = **kein** Termin |
 | Farbe | optional `#RRGGBB` für die Karte |
+| Std | optional: bezahlte Stunden (z. B. `6,5`). Ohne Angabe: Dauer von Start bis Ende, ohne Pausenabzug |
 
 ```
-F1;Frühdienst 1;06:00;14:00
+F1;Frühdienst 1;06:30;13:00;;;6,5
 N1;Nachtdienst 1;21:00;06:00
-U;Urlaub;;;abwesend
+F;Frühdienst
+U;Urlaub;;;urlaub
+K;Krank;;;abwesend
 X;Frei;;;frei
 ```
 
-> **Wichtig:** Die mitgelieferten Zeiten sind Platzhalter. Bitte mit dem Aushang abgleichen und unter *Konfigurieren* der Integration anpassen. Änderungen an Zeiten gelten für die Anzeige im Dienstplan-Kalender sofort; bereits in einen Ziel-Kalender übertragene Termine bleiben unverändert (Tag neu eintragen oder Termin dort ändern).
+> **Wichtig:** Die mitgelieferten Dienste stammen aus einem unscharfen Foto der Legende. Sicher lesbar waren nur die Stunden (F1 6,5 / F2 6 / F3 4 und S1 6,5 / S2 6 / S3 4). Die Uhrzeiten sind daraus abgeleitet und **müssen mit dem Aushang abgeglichen werden**. Dienste ohne Uhrzeit (`F`, `S`, `F4`, `S4`) erzeugen zunächst Ganztagstermine. Weitere Dienste (Zwischen- und Nachtdienste) einfach als neue Zeile ergänzen.
+
+Optional bei der Einrichtung: **Wochensoll** (für die Bilanz), **Urlaubstage pro Jahr** (für den Resturlaub) und ein **Ziel-Kalender** für den Abgleich. Alles lässt sich später unter *Konfigurieren* ändern.
 
 ## Karte
 
-Die Karte wird von der Integration automatisch bereitgestellt. Im Dashboard:
+Wird von der Integration automatisch bereitgestellt. Im Dashboard *Karte hinzufügen → Dienstplan* (mit grafischem Editor) oder per YAML:
 
 ```yaml
 type: custom:dienstplan-card
 entity: calendar.jenny_dienstplan
 title: Dienstplan Jenny
+show_times: true                  # optional: Uhrzeiten in den Tagen (Standard: an)
+holidays: calendar.deutschland    # optional: Feiertagskalender
 ```
 
-Bedienung: Tag antippen, im Auswahlfenster die Schicht wählen (mit Uhrzeiten, „Kein Dienst“ löscht den Eintrag). Der Eintrag wird sofort gespeichert und der Kalendertermin angelegt. Mit ‹ › wechselst du den Monat.
+- **Tag antippen:** Schicht wählen; es wird sofort gespeichert. Mit *Bis einschließlich* trägst du einen ganzen Zeitraum ein. *Kein Dienst* löscht den Eintrag.
+- **KW-Zelle antippen:** Wochentage markieren (Standard Mo–Fr) und eine Schicht wählen, oder die Woche aus der Vorwoche bzw. in die nächste Woche **kopieren**. Kopieren überschreibt nur Tage, an denen in der Quellwoche etwas steht, und löscht nichts.
+- **KW-Zelle:** zeigt die Wochenstunden. Mit Wochensoll: rot = Minusstunden, grün = Plus. Ein `*` bedeutet, dass ein Dienst ohne bekannte Stunden dabei ist.
+- **Wischen** (Handy) oder ‹ › wechselt den Monat.
+- **Kalender-Link:** kopiert die Abo-Adresse (siehe unten).
+- **Feiertage:** als `holidays` einen Kalender angeben, z. B. aus der HA-Integration *Feiertage*. Feiertage erscheinen rot.
+
+## Sensoren
+
+| Sensor | Inhalt |
+|--------|--------|
+| Dienst heute / Dienst morgen | Name des Dienstes (oder „Kein Dienst“); Attribute `code`, `start`, `end`, `hours` |
+| Nächster Dienstbeginn | Zeitstempel (nur Dienste mit Uhrzeit); Attribute `code`, `name`, `end` |
+| Stunden diese Woche | Wochenstunden (Mo–So); Attribute `target`, `balance` |
+| Wochenbilanz | Ist minus Soll (nur mit Wochensoll) |
+| Urlaub genommen | Urlaubstage dieses Jahres (Mo–Fr) |
+| Resturlaub | Jahresurlaub minus genommen (nur mit Urlaubstagen) |
+
+Urlaub und Krank an Werktagen werden für die Bilanz mit Soll/5 Stunden gutgeschrieben.
+
+**Beispiel: Wecker 90 Minuten vor Dienstbeginn** (Entity-ID des Sensors prüfen):
+
+```yaml
+triggers:
+  - trigger: time
+    at: sensor.jenny_naechster_dienstbeginn
+    offset: "-01:30:00"
+actions:
+  - action: notify.mobile_app_handy
+    data:
+      message: "Gleich geht der Dienst los"
+```
+
+## Kalender-Link (iCal)
+
+Die Kalender-Entität hat das Attribut `ical_url`; die Karte kopiert es über den Knopf *Kalender-Link*. In Google Kalender: *Weitere Kalender → Per URL*, in Apple Kalender: *Ablage → Neues Kalenderabonnement*.
+
+- Der Link enthält einen geheimen Token und braucht keine Anmeldung. **Wer den Link kennt, sieht den Dienstplan.** Mit dem Service *Kalender-Link erneuern* wird der alte Link ungültig.
+- Damit Google/Apple den Link erreichen, muss Home Assistant von außen erreichbar sein (Nabu Casa oder eigene Domain, hinterlegt als externe URL).
+- Abos werden von den Anbietern nur alle paar Stunden aktualisiert (bei Google teils bis zu 24 h). Für sofortige Termine den Abgleich nutzen.
 
 ## Abgleich in einen anderen Kalender
 
-In den Optionen einen Kalender unter *Zusätzlich in diesen Kalender eintragen* wählen. Beim Speichern werden neue und geänderte Tage dorthin übertragen (`calendar.create_event`). Jeder übertragene Termin enthält im Beschreibungstext eine Kennung `[dienstplan:…]`.
+Unter *Konfigurieren* einen Kalender bei *Zusätzlich in diesen Kalender eintragen* wählen. Beim Speichern werden neue und geänderte Tage dorthin übertragen (`calendar.create_event`). Jeder Termin enthält im Beschreibungstext eine Kennung `[dienstplan:…]`.
 
-- Wird ein Tag geändert oder gelöscht, entfernt die Integration den alten Termin **nur, wenn der Ziel-Kalender Löschen unterstützt** (z. B. Google, lokaler Kalender) und der Termin die Kennung trägt. Andernfalls erscheint eine Benachrichtigung mit den Tagen, die manuell zu löschen sind.
-- Termine ohne Kennung werden nie angefasst.
-- Schlägt das Anlegen fehl, wird der Tag nicht als übertragen markiert; der Service *Dienstplan: Abgleichen* wiederholt den Versuch.
+- Wird ein Tag geändert oder gelöscht, entfernt die Integration den alten Termin **nur, wenn der Ziel-Kalender Löschen unterstützt** (z. B. Google, lokaler Kalender) und der Termin die Kennung trägt. Sonst erscheint eine Benachrichtigung mit den Tagen, die manuell zu löschen sind. Termine ohne Kennung werden nie angefasst.
+- Ändern sich Name oder Uhrzeit eines Dienstes in den Einstellungen, werden die betroffenen Tage (ab 14 Tage zurück) automatisch neu übertragen.
+- Wechselst du den Ziel-Kalender, wird alles neu dorthin übertragen. Die Termine im alten Kalender bleiben bestehen.
+- Schlägt das Anlegen fehl, wird der Tag nicht als übertragen markiert. Der Service *Abgleichen* wiederholt den Versuch.
 
 ## Services
 
@@ -63,12 +112,13 @@ In den Optionen einen Kalender unter *Zusätzlich in diesen Kalender eintragen* 
 |---------|-------|
 | `dienstplan.set_shift` | Dienst für Tag oder Zeitraum setzen (`date`, optional `end_date`, `shift`; leer = löschen) |
 | `dienstplan.set_shifts` | Mehrere Tage auf einmal (`days: {"2026-10-05": "F1", …}`) |
-| `dienstplan.sync` | Alle noch nicht übertragenen Tage in den Ziel-Kalender schreiben |
+| `dienstplan.sync` | Alle noch nicht übertragenen oder geänderten Tage in den Ziel-Kalender schreiben |
+| `dienstplan.regenerate_link` | Neuen iCal-Link erzeugen |
 
 Alle Services richten sich an die Kalender-Entität (`target: entity_id`).
 
 ```yaml
-service: dienstplan.set_shift
+action: dienstplan.set_shift
 target:
   entity_id: calendar.jenny_dienstplan
 data:
@@ -77,6 +127,18 @@ data:
   shift: F1
 ```
 
+## Bekannte Grenzen
+
+- Die Integration wurde ohne laufende Home-Assistant-Instanz entwickelt. Die Logik (Zeiten, Abgleich, Stunden, Feed) und die Karte sind mit eigenen Tests geprüft, die Einrichtung in Home Assistant selbst noch nicht. Fehler bitte als Issue melden.
+- Stunden werden ohne Pausenabzug berechnet, sofern bei `Std` nichts angegeben ist.
+- Feiertage werden nur markiert, nicht in die Stunden eingerechnet.
+
 ## Entwicklung
 
-`tests/test_shifts.py` prüft Parser und Zeitberechnung (`pytest`). Benötigt Home Assistant 2024.11 oder neuer.
+```
+python -m pytest tests -q          # Dienste, Stunden, iCal
+python tests/check_manager.py      # Manager/Abgleich mit Home-Assistant-Stubs
+node tests/card.test.js            # Karte mit Mini-DOM
+```
+
+Bei jedem Push prüft GitHub Actions zusätzlich hassfest und die HACS-Validierung.

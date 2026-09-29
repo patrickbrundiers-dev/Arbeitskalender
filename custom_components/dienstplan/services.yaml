@@ -37,3 +37,9 @@ sync:
     entity:
       integration: dienstplan
       domain: calendar
+
+regenerate_link:
+  target:
+    entity:
+      integration: dienstplan
+      domain: calendar

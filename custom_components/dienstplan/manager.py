@@ -1,10 +1,11 @@
-"""Verwaltung der Dienste: Speicherung, Termine und Abgleich in einen Ziel-Kalender."""
+"""Verwaltung der Dienste: Speicherung, Termine, Statistik, Feed und Abgleich in einen Ziel-Kalender."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 import logging
+import secrets
 
 import voluptuous as vol
 
@@ -13,24 +14,34 @@ from homeassistant.components.calendar import CalendarEntityFeature, CalendarEve
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.network import NoURLAvailableError, get_url
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_SHIFTS,
     CONF_SYNC_CALENDAR,
+    CONF_VACATION_DAYS,
+    CONF_WEEKLY_HOURS,
     DOMAIN,
     EVENT_LOOKAHEAD_DAYS,
+    FEED_DAYS_AHEAD,
+    FEED_DAYS_BACK,
     STORAGE_VERSION,
+    SYNC_DAYS_BACK,
 )
+from .ical import IcsEvent, build_ics
 from .shifts import (
+    CAT_WORK,
     DEFAULT_SHIFTS_TEXT,
+    KIND_TIMED,
     Shift,
     ShiftParseError,
     event_bounds,
     find_shift,
     parse_shifts,
 )
+from .stats import stats_for_range, vacation_days_taken, week_start, week_stats
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,10 +61,12 @@ class DienstplanManager:
         self.entry = entry
         self.store: Store[dict] = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         self.days: dict[str, str] = {}
-        self.synced: dict[str, str] = {}
+        self.synced: dict[str, str] = {}  # Datum -> Signatur des übertragenen Termins
+        self.synced_target: str | None = None
+        self.token: str = ""
         self._listeners: list[Callable[[], None]] = []
 
-        text = entry.options.get(CONF_SHIFTS, entry.data.get(CONF_SHIFTS, DEFAULT_SHIFTS_TEXT))
+        text = self._opt(CONF_SHIFTS, DEFAULT_SHIFTS_TEXT)
         try:
             self.shifts = parse_shifts(text)
         except ShiftParseError as err:
@@ -62,11 +75,27 @@ class DienstplanManager:
 
     # ------------------------------------------------------------------ Konfiguration
 
+    def _opt(self, key: str, default=None):
+        return self.entry.options.get(key, self.entry.data.get(key, default))
+
     @property
     def sync_calendar(self) -> str | None:
         """Ziel-Kalender für den Abgleich (oder ``None``)."""
-        value = self.entry.options.get(CONF_SYNC_CALENDAR, self.entry.data.get(CONF_SYNC_CALENDAR))
-        return value or None
+        return self._opt(CONF_SYNC_CALENDAR) or None
+
+    @property
+    def weekly_hours(self) -> float:
+        try:
+            return max(0.0, float(self._opt(CONF_WEEKLY_HOURS, 0) or 0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @property
+    def vacation_days(self) -> int:
+        try:
+            return max(0, int(float(self._opt(CONF_VACATION_DAYS, 0) or 0)))
+        except (TypeError, ValueError):
+            return 0
 
     # ------------------------------------------------------------------ Speicherung
 
@@ -74,12 +103,21 @@ class DienstplanManager:
         data = await self.store.async_load() or {}
         self.days = {k: v for k, v in data.get("days", {}).items() if isinstance(v, str) and v}
         self.synced = {k: v for k, v in data.get("synced", {}).items() if isinstance(v, str) and v}
+        self.synced_target = data.get("synced_target") or None
+        self.token = data.get("token") or ""
+        if not self.token:
+            self.token = secrets.token_urlsafe(24)
+            await self._async_save()
 
     async def _async_save(self) -> None:
-        await self.store.async_save({"days": self.days, "synced": self.synced})
-
-    async def async_remove_storage(self) -> None:
-        await self.store.async_remove()
+        await self.store.async_save(
+            {
+                "days": self.days,
+                "synced": self.synced,
+                "synced_target": self.synced_target,
+                "token": self.token,
+            }
+        )
 
     # ------------------------------------------------------------------ Listener
 
@@ -151,6 +189,83 @@ class DienstplanManager:
         events.sort(key=lambda event: _as_datetime(event.start, tz))
         return events[0] if events else None
 
+    def next_work_start(self) -> tuple[datetime, Shift] | None:
+        """Beginn des nächsten Dienstes mit bekannter Uhrzeit."""
+        now = dt_util.now()
+        tz = dt_util.get_default_time_zone()
+        earliest = (now.date() - timedelta(days=1)).isoformat()
+        for key in sorted(self.days):
+            if key < earliest:
+                continue
+            shift = find_shift(self.shifts, self.days[key])
+            if shift is None or shift.category != CAT_WORK or shift.kind != KIND_TIMED or shift.start is None:
+                continue
+            start = datetime.combine(date.fromisoformat(key), shift.start, tzinfo=tz)
+            if start > now:
+                return start, shift
+        return None
+
+    # ------------------------------------------------------------------ Statistik
+
+    def week_stats(self, monday: date) -> dict:
+        return week_stats(self.days, self.shifts, monday, self.weekly_hours)
+
+    def current_week_stats(self) -> dict:
+        return self.week_stats(week_start(dt_util.now().date()))
+
+    def stats_range(self, start: date, end: date) -> dict[str, dict]:
+        return stats_for_range(self.days, self.shifts, start, end, self.weekly_hours)
+
+    def vacation_taken(self, year: int) -> int:
+        return vacation_days_taken(self.days, self.shifts, year)
+
+    def vacation_left(self, year: int) -> int | None:
+        total = self.vacation_days
+        return total - self.vacation_taken(year) if total > 0 else None
+
+    # ------------------------------------------------------------------ iCal-Feed
+
+    def feed_path(self) -> str:
+        return f"/api/{DOMAIN}/feed/{self.entry.entry_id}/{self.token}/calendar.ics"
+
+    def feed_url(self) -> str:
+        path = self.feed_path()
+        try:
+            return f"{get_url(self.hass, prefer_external=True)}{path}"
+        except NoURLAvailableError:
+            return path
+
+    def build_feed(self) -> str:
+        today = dt_util.now().date()
+        lo = (today - timedelta(days=FEED_DAYS_BACK)).isoformat()
+        hi = (today + timedelta(days=FEED_DAYS_AHEAD)).isoformat()
+        tz = dt_util.get_default_time_zone()
+        events: list[IcsEvent] = []
+        for key in sorted(self.days):
+            if key < lo or key > hi:
+                continue
+            day = date.fromisoformat(key)
+            shift = find_shift(self.shifts, self.days[key])
+            bounds = event_bounds(shift, day, tz) if shift is not None else None
+            if shift is None or bounds is None:
+                continue
+            events.append(
+                IcsEvent(
+                    uid=f"{self.entry.entry_id}-{key}@dienstplan",
+                    summary=shift.name,
+                    start=bounds[0],
+                    end=bounds[1],
+                    description=f"Kürzel: {shift.code}",
+                )
+            )
+        return build_ics(self.entry.title, events, dt_util.utcnow())
+
+    async def async_regenerate_token(self) -> None:
+        """Neuen Feed-Link erzeugen; der alte Link funktioniert danach nicht mehr."""
+        self.token = secrets.token_urlsafe(24)
+        await self._async_save()
+        self._notify()
+
     # ------------------------------------------------------------------ Ändern
 
     async def async_set_days(self, changes: dict[date, str | None]) -> None:
@@ -189,21 +304,33 @@ class DienstplanManager:
     async def async_sync(self, only: set[str] | None = None) -> None:
         """Termine im Ziel-Kalender anlegen bzw. ersetzen.
 
-        Es werden nur Tage angefasst, bei denen sich der Dienst seit dem letzten
-        Abgleich geändert hat.
+        Es werden nur Tage angefasst, bei denen sich der Termin (Dienst, Name oder
+        Uhrzeit) seit dem letzten Abgleich geändert hat. Ohne ``only`` werden Tage
+        ab „heute minus 14 Tage“ betrachtet. Wechselt der Ziel-Kalender, wird neu
+        übertragen; Termine im alten Kalender bleiben dort bestehen.
         """
         target = self.sync_calendar
         if not target:
             return
 
-        keys = only if only is not None else set(self.days) | set(self.synced)
+        dirty = False
+        if self.synced_target != target:
+            self.synced = {}
+            self.synced_target = target
+            dirty = True
+
+        if only is None:
+            cutoff = (dt_util.now().date() - timedelta(days=SYNC_DAYS_BACK)).isoformat()
+            keys = {k for k in set(self.days) | set(self.synced) if k >= cutoff}
+        else:
+            keys = set(only)
+
         manual_cleanup: list[str] = []
         failed: list[str] = []
-        dirty = False
 
         for key in sorted(keys):
             shift = find_shift(self.shifts, self.days.get(key))
-            desired = shift.code if shift is not None and shift.creates_event else None
+            desired = shift.signature() if shift is not None and shift.creates_event else None
             current = self.synced.get(key)
             if desired == current:
                 continue
@@ -211,7 +338,7 @@ class DienstplanManager:
             day = date.fromisoformat(key)
             if current is not None:
                 if not await self._async_delete_remote(target, day):
-                    manual_cleanup.append(f"{day.strftime('%d.%m.%Y')} ({current})")
+                    manual_cleanup.append(f"{day.strftime('%d.%m.%Y')} ({current.split('|')[0]})")
                 self.synced.pop(key, None)
                 dirty = True
 
@@ -220,7 +347,7 @@ class DienstplanManager:
                     self.synced[key] = desired
                     dirty = True
                 else:
-                    failed.append(f"{day.strftime('%d.%m.%Y')} ({desired})")
+                    failed.append(f"{day.strftime('%d.%m.%Y')} ({shift.code})")
 
         if dirty:
             await self._async_save()

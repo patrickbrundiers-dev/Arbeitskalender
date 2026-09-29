@@ -1,12 +1,16 @@
 /* Dienstplan-Karte für Home Assistant
  *
- * Konfiguration:
+ * Konfiguration (alles außer entity ist optional; die Karte hat einen grafischen Editor):
  *   type: custom:dienstplan-card
  *   entity: calendar.<name>_dienstplan
- *   title: Dienstplan Jenny        # optional
+ *   title: Dienstplan Jenny
+ *   show_times: true                    # Uhrzeiten in den Tageszellen
+ *   holidays: calendar.deutschland      # Feiertagskalender (z. B. Integration „Feiertage“)
  *
- * Bedienung: Tag antippen, im Auswahlfenster die Schicht wählen – der Eintrag
- * wird sofort gespeichert und der Kalendertermin angelegt.
+ * Bedienung:
+ *   Tag antippen        -> Schicht wählen, optional „bis einschließlich“ für einen Zeitraum
+ *   KW-Zelle antippen   -> Schicht für markierte Wochentage setzen oder Woche kopieren
+ *   Wischen / ‹ ›       -> Monat wechseln
  */
 (() => {
   const DOMAIN = "dienstplan";
@@ -24,9 +28,27 @@
 
   const pad = (n) => String(n).padStart(2, "0");
   const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const parseIso = (s) => {
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  };
   const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
   const monthStart = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
   const mondayOffset = (d) => (d.getDay() + 6) % 7;
+  const mondayOf = (d) => addDays(d, -mondayOffset(d));
+  const fmtDate = (d) => `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.`;
+  const fmtH = (n) => String(Math.round(n * 100) / 100).replace(".", ",");
+  const isoWeek = (d) => {
+    const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+    const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+    return Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
+  };
+  // "06:30" -> "6:30", "13:00" -> "13"
+  const shortTime = (t) => {
+    const [h, m] = t.split(":");
+    return m === "00" ? String(Number(h)) : `${Number(h)}:${m}`;
+  };
 
   const h = (tag, props = {}, ...children) => {
     const el = document.createElement(tag);
@@ -34,6 +56,7 @@
       if (value === false || value == null) continue;
       if (key === "class") el.className = value;
       else if (key === "style") el.style.cssText = value;
+      else if (key === "value") el.value = value;
       else if (key.startsWith("on")) el.addEventListener(key.slice(2), value);
       else if (key === "disabled") el.disabled = true;
       else el.setAttribute(key, value === true ? "" : value);
@@ -57,35 +80,57 @@
       border: none; border-radius: 8px; padding: 6px 12px; min-height: 36px;
     }
     .icon-btn { width: 40px; padding: 6px 0; font-size: 1.2em; line-height: 1; }
-    .grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+    .grid { display: grid; grid-template-columns: 2.9em repeat(7, minmax(0, 1fr)); gap: 4px; touch-action: pan-y; }
     .wd { text-align: center; font-size: .75em; color: var(--secondary-text-color); padding-bottom: 2px; }
     .day {
-      display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 2px;
-      min-height: 52px; padding: 4px 0 3px; border-radius: 8px;
+      display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 1px;
+      min-height: 58px; padding: 3px 0 2px; border-radius: 8px;
       background: var(--secondary-background-color, rgba(127,127,127,.1));
       border: 2px solid transparent; overflow: hidden;
     }
     .day.weekend { background: var(--divider-color, rgba(127,127,127,.2)); }
     .day.other .num { opacity: .4; }
     .day.today { border-color: var(--primary-color); }
+    .day.holiday .num { color: var(--error-color, #db4437); font-weight: 700; }
     .num { font-size: .85em; line-height: 1.1; color: var(--primary-text-color); }
     .badge {
       color: #fff; font-size: .78em; font-weight: 700; border-radius: 6px;
       padding: 1px 5px; max-width: 92%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .footer { margin-top: 10px; min-height: 1.3em; }
-    .status { font-size: .85em; color: var(--secondary-text-color); }
+    .time { font-size: .6em; line-height: 1.1; color: var(--secondary-text-color); white-space: nowrap; }
+    .kw {
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+      background: transparent; border: 2px solid var(--divider-color, rgba(127,127,127,.3));
+      border-radius: 8px; padding: 2px 0; min-height: 58px;
+    }
+    .kw-n { font-size: .68em; color: var(--secondary-text-color); }
+    .kw-h { font-size: .72em; font-weight: 600; }
+    .kw-h.neg { color: var(--error-color, #db4437); }
+    .kw-h.pos { color: var(--success-color, #43a047); }
+    .footer { margin-top: 10px; min-height: 1.3em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .status { flex: 1 1 60%; font-size: .85em; color: var(--secondary-text-color); }
     .status.error { color: var(--error-color, #db4437); }
+    .status.selectable { user-select: all; word-break: break-all; }
+    .link-btn { font-size: .8em; padding: 4px 10px; min-height: 30px; }
     .overlay {
       position: fixed; inset: 0; z-index: 9; background: rgba(0,0,0,.5);
       display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box;
     }
     .dialog {
       background: var(--card-background-color, #fff); color: var(--primary-text-color);
-      border-radius: 14px; width: min(100%, 380px); max-height: 82vh; display: flex; flex-direction: column;
+      border-radius: 14px; width: min(100%, 380px); max-height: 86vh; display: flex; flex-direction: column;
       padding: 14px 12px 12px; box-sizing: border-box; box-shadow: 0 8px 30px rgba(0,0,0,.35);
     }
-    .dlg-title { font-weight: 600; font-size: 1.05em; margin: 0 4px 10px; }
+    .dlg-title { font-weight: 600; font-size: 1.05em; margin: 0 4px 8px; }
+    .dlg-sub { font-size: .8em; color: var(--secondary-text-color); margin: 0 4px 6px; }
+    .range { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 4px 8px; font-size: .85em; }
+    .range input { font: inherit; color: var(--primary-text-color); background: var(--secondary-background-color, rgba(127,127,127,.12)); border: none; border-radius: 8px; padding: 6px 8px; }
+    .wdchips { display: flex; gap: 4px; margin: 0 0 8px; }
+    .wdchip {
+      flex: 1; min-height: 34px; border-radius: 8px; border: 2px solid transparent;
+      background: var(--secondary-background-color, rgba(127,127,127,.12)); font-size: .85em;
+    }
+    .wdchip.on { border-color: var(--primary-color); font-weight: 700; }
     .options { overflow-y: auto; display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
     .opt {
       display: flex; align-items: center; gap: 10px; text-align: left; width: 100%;
@@ -96,8 +141,10 @@
     .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
     .opt-code { font-weight: 700; min-width: 2.2em; }
     .opt-name { flex: 1; font-size: .92em; }
-    .opt-time { font-size: .8em; color: var(--secondary-text-color); white-space: nowrap; }
+    .opt-time { font-size: .78em; color: var(--secondary-text-color); white-space: nowrap; }
     .opt.none .opt-name { color: var(--secondary-text-color); }
+    .copy-row { display: flex; gap: 6px; margin-bottom: 8px; }
+    .copy-row .text-btn { flex: 1; font-size: .85em; }
     button[disabled] { opacity: .5; cursor: default; }
   `;
 
@@ -109,22 +156,36 @@
       this._shifts = [];
       this._shiftMap = new Map();
       this._days = {};
-      this._dialog = null; // Datum (YYYY-MM-DD) des geöffneten Auswahlfensters
+      this._weeks = {};
+      this._holidays = {};
+      this._dialog = null; // {type: "day", key} | {type: "week", monday}
+      this._rangeEnd = "";
+      this._weekDays = [true, true, true, true, true, false, false];
       this._saving = false;
       this._loaded = false;
       this._status = "";
+      this._statusSelectable = false;
       this._error = "";
       this._hass = null;
       this._stamp = null;
       this._syncCalendar = null;
+      this._icalUrl = null;
     }
 
-    static getStubConfig() {
-      return { entity: "calendar.dienstplan" };
+    static getConfigElement() {
+      return document.createElement("dienstplan-card-editor");
+    }
+
+    static getStubConfig(hass) {
+      const states = (hass && hass.states) || {};
+      const entity = Object.keys(states).find(
+        (id) => id.startsWith("calendar.") && states[id].attributes && "today_shift" in states[id].attributes
+      );
+      return { entity: entity || "calendar.dienstplan", show_times: true };
     }
 
     getCardSize() {
-      return 8;
+      return 9;
     }
 
     setConfig(config) {
@@ -158,31 +219,68 @@
       return Array.from({ length: weeks * 7 }, (_, i) => addDays(start, i));
     }
 
+    _fetch(startKey, endKey) {
+      return this._hass.callWS({
+        type: `${DOMAIN}/get_days`,
+        entity_id: this._config.entity,
+        start: startKey,
+        end: endKey,
+      });
+    }
+
     async _load() {
       if (!this._hass || !this._config) return;
       const days = this._gridDays();
       const startKey = iso(days[0]);
       const endKey = iso(days[days.length - 1]);
       try {
-        const res = await this._hass.callWS({
-          type: `${DOMAIN}/get_days`,
-          entity_id: this._config.entity,
-          start: startKey,
-          end: endKey,
-        });
+        const res = await this._fetch(startKey, endKey);
         this._shifts = res.shifts || [];
         this._shiftMap = new Map(this._shifts.map((s) => [s.code.toLowerCase(), s]));
         for (const key of Object.keys(this._days)) {
           if (key >= startKey && key <= endKey) delete this._days[key];
         }
         Object.assign(this._days, res.days || {});
+        Object.assign(this._weeks, res.weeks || {});
         this._syncCalendar = res.sync_calendar || null;
+        this._icalUrl = res.ical_url || null;
         this._loaded = true;
         this._error = "";
       } catch (err) {
         this._error = (err && err.message) || "Dienstplan konnte nicht geladen werden.";
       }
       this._render();
+      await this._loadHolidays(days[0], days[days.length - 1]);
+    }
+
+    async _loadHolidays(first, last) {
+      const entity = this._config && this._config.holidays;
+      if (!entity || !this._hass || !this._hass.callApi) return;
+      try {
+        const startIso = new Date(first.getFullYear(), first.getMonth(), first.getDate()).toISOString();
+        const endIso = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1).toISOString();
+        const events = await this._hass.callApi(
+          "GET",
+          `calendars/${entity}?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`
+        );
+        for (const key of Object.keys(this._holidays)) {
+          if (key >= iso(first) && key <= iso(last)) delete this._holidays[key];
+        }
+        for (const ev of events || []) {
+          const s = (ev.start && (ev.start.date || (ev.start.dateTime || "").slice(0, 10))) || "";
+          const e = (ev.end && (ev.end.date || (ev.end.dateTime || "").slice(0, 10))) || s;
+          if (!s) continue;
+          let d = parseIso(s);
+          const stop = parseIso(e);
+          do {
+            this._holidays[iso(d)] = ev.summary || "Feiertag";
+            d = addDays(d, 1);
+          } while (d < stop);
+        }
+        this._render();
+      } catch (err) {
+        // Feiertage sind optional – Fehler stillschweigend ignorieren
+      }
     }
 
     _colorFor(code) {
@@ -192,15 +290,30 @@
     }
 
     _timeText(shift) {
-      if (shift.start && shift.end) return `${shift.start}–${shift.end}`;
-      return shift.kind === "off" ? "kein Termin" : "ganztägig";
+      let text = shift.kind === "off" ? "kein Termin" : "ganztägig";
+      if (shift.start && shift.end) text = `${shift.start}–${shift.end}`;
+      if (shift.hours != null) text += ` · ${fmtH(shift.hours)} h`;
+      return text;
+    }
+
+    _cellTime(code) {
+      const shift = this._shiftMap.get((code || "").toLowerCase());
+      return shift && shift.start && shift.end ? `${shortTime(shift.start)}–${shortTime(shift.end)}` : "";
     }
 
     // ---------------------------------------------------------------- Aktionen
 
-    _open(key) {
+    _openDay(key) {
       if (this._saving || !this._loaded) return;
-      this._dialog = key;
+      this._dialog = { type: "day", key };
+      this._rangeEnd = "";
+      this._status = "";
+      this._render();
+    }
+
+    _openWeek(monday) {
+      if (this._saving || !this._loaded) return;
+      this._dialog = { type: "week", monday };
       this._status = "";
       this._render();
     }
@@ -210,22 +323,17 @@
       this._render();
     }
 
-    async _choose(code) {
-      const key = this._dialog;
-      if (!key || this._saving) return;
-      if (code === (this._days[key] || "")) {
-        this._close();
-        return;
-      }
+    async _call(service, data, okText) {
       this._dialog = null;
       this._saving = true;
       this._error = "";
+      this._statusSelectable = false;
       this._status = "Speichere …";
       this._render();
       let saveError = "";
       try {
-        await this._hass.callService(DOMAIN, "set_shift", { date: key, shift: code }, { entity_id: this._config.entity });
-        this._status = code ? `${code} eingetragen.` : "Eintrag gelöscht.";
+        await this._hass.callService(DOMAIN, service, data, { entity_id: this._config.entity });
+        this._status = okText;
       } catch (err) {
         saveError = (err && err.message) || "Speichern fehlgeschlagen.";
         this._status = "";
@@ -238,6 +346,82 @@
       }
     }
 
+    async _chooseDay(code) {
+      const dialog = this._dialog;
+      if (!dialog || dialog.type !== "day" || this._saving) return;
+      const key = dialog.key;
+      const end = this._rangeEnd && this._rangeEnd > key ? this._rangeEnd : "";
+      if (!end && code === (this._days[key] || "")) {
+        this._close();
+        return;
+      }
+      const data = { date: key, shift: code };
+      if (end) data.end_date = end;
+      const until = end ? ` bis ${fmtDate(parseIso(end))}` : "";
+      await this._call("set_shift", data, code ? `${code} eingetragen${until}.` : `Einträge gelöscht${until}.`);
+    }
+
+    async _chooseWeek(code) {
+      const dialog = this._dialog;
+      if (!dialog || dialog.type !== "week" || this._saving) return;
+      const monday = parseIso(dialog.monday);
+      const days = {};
+      this._weekDays.forEach((on, i) => {
+        if (on) days[iso(addDays(monday, i))] = code;
+      });
+      const count = Object.keys(days).length;
+      if (!count) {
+        this._status = "Bitte mindestens einen Wochentag markieren.";
+        this._render();
+        return;
+      }
+      const text = code ? `${code} für ${count} ${count === 1 ? "Tag" : "Tage"} eingetragen.` : "Einträge gelöscht.";
+      await this._call("set_shifts", { days }, text);
+    }
+
+    async _copyWeek(direction) {
+      const dialog = this._dialog;
+      if (!dialog || dialog.type !== "week" || this._saving) return;
+      const monday = parseIso(dialog.monday);
+      const source = direction < 0 ? addDays(monday, -7) : monday;
+      const target = direction < 0 ? monday : addDays(monday, 7);
+      let res;
+      try {
+        res = await this._fetch(iso(source), iso(addDays(source, 6)));
+      } catch (err) {
+        this._error = (err && err.message) || "Woche konnte nicht gelesen werden.";
+        this._render();
+        return;
+      }
+      const days = {};
+      for (let i = 0; i < 7; i++) {
+        const code = (res.days || {})[iso(addDays(source, i))];
+        if (code) days[iso(addDays(target, i))] = code;
+      }
+      const count = Object.keys(days).length;
+      if (!count) {
+        this._status = "In der Quellwoche ist nichts eingetragen.";
+        this._render();
+        return;
+      }
+      await this._call("set_shifts", { days }, `${count} ${count === 1 ? "Tag" : "Tage"} kopiert.`);
+    }
+
+    async _copyLink() {
+      const url = this._icalUrl;
+      if (!url) return;
+      try {
+        await navigator.clipboard.writeText(url);
+        this._status = "Kalender-Link kopiert. In Google/Apple Kalender als Abo (per URL) hinzufügen.";
+        this._statusSelectable = false;
+      } catch (err) {
+        this._status = url;
+        this._statusSelectable = true;
+      }
+      this._error = "";
+      this._render();
+    }
+
     _go(deltaMonths) {
       const m = this._month;
       this._month = new Date(m.getFullYear(), m.getMonth() + deltaMonths, 1);
@@ -247,47 +431,125 @@
 
     // ---------------------------------------------------------------- Darstellung
 
-    _renderDialog() {
-      const [y, m, d] = this._dialog.split("-").map(Number);
-      const date = new Date(y, m - 1, d);
-      const current = this._days[this._dialog] || "";
+    _options(current, pick, noneLabel) {
       return h(
         "div",
-        {
-          class: "overlay",
-          onclick: (ev) => {
-            if (ev.target === ev.currentTarget) this._close();
-          },
-        },
+        { class: "options" },
+        this._shifts.map((shift) =>
+          h(
+            "button",
+            {
+              class: `opt${current && current.toLowerCase() === shift.code.toLowerCase() ? " selected" : ""}`,
+              onclick: () => pick(shift.code),
+            },
+            h("span", { class: "dot", style: `background:${this._colorFor(shift.code)}` }),
+            h("span", { class: "opt-code" }, shift.code),
+            h("span", { class: "opt-name" }, shift.name),
+            h("span", { class: "opt-time" }, this._timeText(shift))
+          )
+        ),
+        h(
+          "button",
+          { class: `opt none${current === "" ? " selected" : ""}`, onclick: () => pick("") },
+          h("span", { class: "dot", style: "background:transparent;border:2px solid var(--secondary-text-color)" }),
+          h("span", { class: "opt-name" }, noneLabel)
+        )
+      );
+    }
+
+    _renderDayDialog() {
+      const key = this._dialog.key;
+      const date = parseIso(key);
+      const current = this._days[key] || "";
+      return h(
+        "div",
+        { class: "dialog", role: "dialog", "aria-label": "Dienst wählen" },
         h(
           "div",
-          { class: "dialog", role: "dialog", "aria-label": "Dienst wählen" },
-          h("div", { class: "dlg-title" }, `${WEEKDAYS_LONG[mondayOffset(date)]}, ${d}. ${MONTHS[m - 1]} ${y}`),
-          h(
-            "div",
-            { class: "options" },
-            this._shifts.map((shift) =>
-              h(
-                "button",
-                {
-                  class: `opt${current.toLowerCase() === shift.code.toLowerCase() ? " selected" : ""}`,
-                  onclick: () => this._choose(shift.code),
-                },
-                h("span", { class: "dot", style: `background:${this._colorFor(shift.code)}` }),
-                h("span", { class: "opt-code" }, shift.code),
-                h("span", { class: "opt-name" }, shift.name),
-                h("span", { class: "opt-time" }, this._timeText(shift))
-              )
-            ),
+          { class: "dlg-title" },
+          `${WEEKDAYS_LONG[mondayOffset(date)]}, ${date.getDate()}. ${MONTHS[date.getMonth()]} ${date.getFullYear()}`
+        ),
+        this._holidays[key] ? h("div", { class: "dlg-sub" }, this._holidays[key]) : null,
+        h(
+          "label",
+          { class: "range" },
+          "Bis einschließlich (optional)",
+          h("input", {
+            type: "date",
+            min: key,
+            value: this._rangeEnd,
+            onchange: (ev) => {
+              this._rangeEnd = ev.target.value || "";
+            },
+          })
+        ),
+        this._options(current, (code) => this._chooseDay(code), "Kein Dienst (Eintrag löschen)"),
+        h("button", { class: "text-btn", onclick: () => this._close() }, "Abbrechen")
+      );
+    }
+
+    _renderWeekDialog() {
+      const monday = parseIso(this._dialog.monday);
+      const sunday = addDays(monday, 6);
+      return h(
+        "div",
+        { class: "dialog", role: "dialog", "aria-label": "Woche bearbeiten" },
+        h(
+          "div",
+          { class: "dlg-title" },
+          `KW ${isoWeek(monday)} · ${fmtDate(monday)}–${fmtDate(sunday)}${sunday.getFullYear()}`
+        ),
+        h("div", { class: "dlg-sub" }, "Gilt für die markierten Wochentage:"),
+        h(
+          "div",
+          { class: "wdchips" },
+          WEEKDAYS.map((wd, i) =>
             h(
               "button",
-              { class: `opt none${current ? "" : " selected"}`, onclick: () => this._choose("") },
-              h("span", { class: "dot", style: "background:transparent;border:2px solid var(--secondary-text-color)" }),
-              h("span", { class: "opt-name" }, "Kein Dienst (Eintrag löschen)")
+              {
+                class: `wdchip${this._weekDays[i] ? " on" : ""}`,
+                "aria-pressed": this._weekDays[i] ? "true" : "false",
+                onclick: () => {
+                  this._weekDays[i] = !this._weekDays[i];
+                  this._render();
+                },
+              },
+              wd
             )
-          ),
-          h("button", { class: "text-btn", onclick: () => this._close() }, "Abbrechen")
-        )
+          )
+        ),
+        this._options(undefined, (code) => this._chooseWeek(code), "Kein Dienst (Einträge löschen)"),
+        h(
+          "div",
+          { class: "copy-row" },
+          h("button", { class: "text-btn", onclick: () => this._copyWeek(-1) }, "Vorwoche kopieren"),
+          h("button", { class: "text-btn", onclick: () => this._copyWeek(1) }, "In nächste Woche kopieren")
+        ),
+        h("button", { class: "text-btn", onclick: () => this._close() }, "Abbrechen")
+      );
+    }
+
+    _renderKw(monday) {
+      const key = iso(monday);
+      const stats = this._weeks[key];
+      let hoursNode = null;
+      let title = `KW ${isoWeek(monday)}`;
+      if (stats && (stats.hours || stats.missing)) {
+        let cls = "kw-h";
+        if (stats.balance != null) cls += stats.balance < -0.01 ? " neg" : stats.balance > 0.01 ? " pos" : "";
+        hoursNode = h("span", { class: cls }, `${fmtH(stats.hours)}${stats.missing ? "*" : ""}`);
+        title += ` · ${fmtH(stats.hours)} h`;
+        if (stats.target != null) {
+          const sign = stats.balance > 0 ? "+" : "";
+          title += ` · Soll ${fmtH(stats.target)} · Bilanz ${sign}${fmtH(stats.balance)}`;
+        }
+        if (stats.missing) title += ` · ${stats.missing} Dienst(e) ohne Stunden`;
+      }
+      return h(
+        "button",
+        { class: "kw", title, "aria-label": title, onclick: () => this._openWeek(key) },
+        h("span", { class: "kw-n" }, `KW${isoWeek(monday)}`),
+        hoursNode
       );
     }
 
@@ -298,6 +560,7 @@
 
       const todayKey = iso(new Date());
       const month = this._month.getMonth();
+      const showTimes = this._config.show_times !== false;
 
       const nav = h(
         "div",
@@ -319,26 +582,52 @@
         )
       );
 
-      const grid = h(
-        "div",
-        { class: "grid" },
-        WEEKDAYS.map((wd) => h("div", { class: "wd" }, wd)),
-        this._gridDays().map((day) => {
+      const cells = [h("div", { class: "wd" }, "KW"), ...WEEKDAYS.map((wd) => h("div", { class: "wd" }, wd))];
+      const gridDays = this._gridDays();
+      for (let i = 0; i < gridDays.length; i += 7) {
+        cells.push(this._renderKw(gridDays[i]));
+        for (const day of gridDays.slice(i, i + 7)) {
           const key = iso(day);
           const code = this._days[key] || "";
           const classes = ["day"];
           if (day.getDay() === 0 || day.getDay() === 6) classes.push("weekend");
           if (day.getMonth() !== month) classes.push("other");
           if (key === todayKey) classes.push("today");
-          const label = `${day.getDate()}. ${MONTHS[day.getMonth()]}${code ? ", " + code : ""}`;
-          return h(
-            "button",
-            { class: classes.join(" "), "aria-label": label, onclick: () => this._open(key) },
-            h("span", { class: "num" }, day.getDate()),
-            code ? h("span", { class: "badge", style: `background:${this._colorFor(code)}` }, code) : null
+          if (this._holidays[key]) classes.push("holiday");
+          const holiday = this._holidays[key] ? ` (${this._holidays[key]})` : "";
+          const label = `${day.getDate()}. ${MONTHS[day.getMonth()]}${code ? ", " + code : ""}${holiday}`;
+          const time = showTimes && code ? this._cellTime(code) : "";
+          cells.push(
+            h(
+              "button",
+              { class: classes.join(" "), title: this._holidays[key] || null, "aria-label": label, onclick: () => this._openDay(key) },
+              h("span", { class: "num" }, day.getDate()),
+              code ? h("span", { class: "badge", style: `background:${this._colorFor(code)}` }, code) : null,
+              time ? h("span", { class: "time" }, time) : null
+            )
           );
-        })
+        }
+      }
+      const grid = h("div", { class: "grid" }, cells);
+
+      // Wischen wechselt den Monat
+      let startX = 0;
+      let startY = 0;
+      grid.addEventListener(
+        "touchstart",
+        (ev) => {
+          const t = ev.touches[0];
+          startX = t.clientX;
+          startY = t.clientY;
+        },
+        { passive: true }
       );
+      grid.addEventListener("touchend", (ev) => {
+        const t = ev.changedTouches[0];
+        const dx = t.clientX - startX;
+        const dy = t.clientY - startY;
+        if (Math.abs(dx) > 60 && Math.abs(dy) < 40) this._go(dx < 0 ? 1 : -1);
+      });
 
       let statusText = this._error || this._status;
       if (!statusText && !this._loaded) statusText = "Lade …";
@@ -346,26 +635,81 @@
       const footer = h(
         "div",
         { class: "footer" },
-        statusText ? h("div", { class: `status${this._error ? " error" : ""}` }, statusText) : null
+        statusText
+          ? h("div", { class: `status${this._error ? " error" : ""}${this._statusSelectable && !this._error ? " selectable" : ""}` }, statusText)
+          : null,
+        this._icalUrl ? h("button", { class: "text-btn link-btn", onclick: () => this._copyLink() }, "Kalender-Link") : null
       );
+
+      const dialog = this._dialog
+        ? h(
+            "div",
+            {
+              class: "overlay",
+              onclick: (ev) => {
+                if (ev.target === ev.currentTarget) this._close();
+              },
+            },
+            this._dialog.type === "week" ? this._renderWeekDialog() : this._renderDayDialog()
+          )
+        : null;
 
       root.append(
         h("style", {}, STYLE),
-        h(
-          "ha-card",
-          {},
-          this._config.title ? h("div", { class: "title" }, this._config.title) : null,
-          nav,
-          grid,
-          footer,
-          this._dialog ? this._renderDialog() : null
-        )
+        h("ha-card", {}, this._config.title ? h("div", { class: "title" }, this._config.title) : null, nav, grid, footer, dialog)
       );
+    }
+  }
+
+  // ------------------------------------------------------------------ Grafischer Editor
+
+  const EDITOR_SCHEMA = [
+    { name: "entity", required: true, selector: { entity: { domain: "calendar" } } },
+    { name: "title", selector: { text: {} } },
+    { name: "show_times", selector: { boolean: {} } },
+    { name: "holidays", selector: { entity: { domain: "calendar" } } },
+  ];
+  const EDITOR_LABELS = {
+    entity: "Dienstplan-Kalender",
+    title: "Titel (optional)",
+    show_times: "Uhrzeiten in den Tagen anzeigen",
+    holidays: "Feiertagskalender (optional)",
+  };
+
+  class DienstplanCardEditor extends HTMLElement {
+    setConfig(config) {
+      this._config = { show_times: true, ...config };
+      this._render();
+    }
+
+    set hass(hass) {
+      this._hass = hass;
+      if (this._form) this._form.hass = hass;
+    }
+
+    _render() {
+      if (!this._form) {
+        this._form = document.createElement("ha-form");
+        this._form.computeLabel = (schema) => EDITOR_LABELS[schema.name] || schema.name;
+        this._form.addEventListener("value-changed", (ev) => {
+          this._config = ev.detail.value;
+          this.dispatchEvent(
+            new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true })
+          );
+        });
+        this.append(this._form);
+      }
+      this._form.hass = this._hass;
+      this._form.schema = EDITOR_SCHEMA;
+      this._form.data = this._config;
     }
   }
 
   if (!customElements.get("dienstplan-card")) {
     customElements.define("dienstplan-card", DienstplanCard);
+  }
+  if (!customElements.get("dienstplan-card-editor")) {
+    customElements.define("dienstplan-card-editor", DienstplanCardEditor);
   }
   window.customCards = window.customCards || [];
   window.customCards.push({
