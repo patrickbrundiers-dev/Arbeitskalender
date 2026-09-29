@@ -20,6 +20,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import CARD_URL, DOMAIN, STORAGE_VERSION, VERSION, WS_GET_DAYS
 from .feed import DienstplanFeedView
 from .manager import DienstplanManager
+from .resources import CREATED, UNSUPPORTED, UPDATED, async_ensure_resource, async_remove_resource
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,9 +34,11 @@ DienstplanConfigEntry = ConfigEntry[DienstplanManager]
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Karte ausliefern, iCal-Feed und Websocket-Befehl registrieren (einmalig)."""
     card_path = Path(__file__).parent / "frontend" / "dienstplan-card.js"
-    await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(card_path), False)])
+    # Mit Cache-Header: die Adresse trägt ?v=<Version>, ein Update ändert sie und lädt die neue Karte
+    await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(card_path), True)])
     add_extra_js_url(hass, f"{CARD_URL}?v={VERSION}")
     _LOGGER.info("Dienstplan-Karte wird unter %s bereitgestellt", CARD_URL)
+    await _async_sync_dashboard_resource(hass, present=True)
     hass.http.register_view(DienstplanFeedView(hass))
     websocket_api.async_register_command(hass, ws_get_days)
     return True
@@ -59,6 +62,29 @@ async def async_unload_entry(hass: HomeAssistant, entry: DienstplanConfigEntry) 
 async def async_remove_entry(hass: HomeAssistant, entry: DienstplanConfigEntry) -> None:
     """Gespeicherte Dienste löschen, wenn der Eintrag entfernt wird."""
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    if not [e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != entry.entry_id]:
+        await _async_sync_dashboard_resource(hass, present=False)  # letzte Einrichtung: Ressource aufräumen
+
+
+async def _async_sync_dashboard_resource(hass: HomeAssistant, *, present: bool) -> None:
+    """Karte als Dashboard-Ressource ein- bzw. austragen.
+
+    Ressourcen lädt das Dashboard bei jedem Öffnen selbst. Damit erscheint die Karte auch dann,
+    wenn die Seite vor dem Start dieser Integration geladen wurde. Best effort: nur im
+    Speichermodus (Standard), Fehler werden nur protokolliert und stören die Einrichtung nie.
+    """
+    try:
+        resources = getattr(hass.data.get("lovelace"), "resources", None)
+        if present:
+            result = await async_ensure_resource(resources, CARD_URL, f"{CARD_URL}?v={VERSION}")
+            if result in (CREATED, UPDATED):
+                _LOGGER.info("Dienstplan-Karte als Dashboard-Ressource eingetragen (%s)", result)
+            elif result == UNSUPPORTED:
+                _LOGGER.debug("Dashboard-Ressourcen nicht änderbar (YAML-Modus?) – Karte wird trotzdem ausgeliefert")
+        else:
+            await async_remove_resource(resources, CARD_URL)
+    except Exception:  # noqa: BLE001 - die Ressource ist nur eine Zugabe
+        _LOGGER.warning("Dashboard-Ressource für die Dienstplan-Karte konnte nicht angepasst werden", exc_info=True)
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: DienstplanConfigEntry) -> None:

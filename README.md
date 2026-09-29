@@ -68,14 +68,15 @@ holidays: calendar.deutschland    # optional: Feiertagskalender
 
 ### Karte erscheint nicht („Custom element doesn't exist: dienstplan-card“)
 
-Die Karte wird beim Start von der Integration bereitgestellt, aber vom Browser nur beim **Neuladen der Seite** abgeholt. Nach der ersten Einrichtung (oder einem Update) deshalb:
+Die Integration liefert die Karte aus und trägt sie beim Start **selbst als Dashboard-Ressource** ein (*Einstellungen → Dashboards → ⋮ → Ressourcen*, nur wenn die Ressourcen im Speichermodus laufen, was der Standard ist). Das Dashboard lädt die Karte dann bei jedem Öffnen. Nach einer **Erstinstallation oder einem Update** gilt trotzdem:
 
-1. **Handy-App:** *Einstellungen → Companion-App → Fehlerbehebung → Frontend-Cache zurücksetzen*, danach die App komplett schließen und neu öffnen.
-2. **Browser:** Seite hart neu laden (Strg+F5 bzw. Umschalt+Neu laden).
-3. **Prüfen, ob die Datei ausgeliefert wird:** `https://<deine-HA-Adresse>/dienstplan_static/dienstplan-card.js` im Browser öffnen. Es muss Programmtext erscheinen. Bei „404 Not Found“ ist die Integration nicht (vollständig) geladen bzw. der Ordner `frontend` fehlt in `custom_components/dienstplan/`.
-4. **Notlösung:** *Einstellungen → Dashboards → ⋮ → Ressourcen* (ggf. im Benutzerprofil den erweiterten Modus einschalten) → Ressource hinzufügen: URL `/dienstplan_static/dienstplan-card.js`, Typ *JavaScript-Modul*.
+1. Home Assistant neu starten und **warten, bis alles hochgefahren ist**.
+2. **Handy-App:** *Einstellungen → Companion-App → Fehlerbehebung → Frontend-Cache zurücksetzen*, danach die App komplett schließen und neu öffnen. **Browser:** Strg+F5.
+3. Steht im Karten-Editor noch eine rote Fehlermeldung, den Editor schließen und neu öffnen. Die Meldung entsteht, wenn die Karte beim Öffnen noch nicht geladen war, und verschwindet nicht von selbst.
+4. **Prüfen, ob die Datei ausgeliefert wird:** `https://<deine-HA-Adresse>/dienstplan_static/dienstplan-card.js` im Browser öffnen. Es muss Programmtext erscheinen. Bei „404 Not Found“ ist die Integration nicht (vollständig) geladen bzw. der Ordner `frontend` fehlt in `custom_components/dienstplan/`.
+5. **Ressourcen im YAML-Modus:** Dort kann die Integration nichts eintragen. Dann selbst die Ressource `/dienstplan_static/dienstplan-card.js` als *JavaScript-Modul* hinzufügen.
 
-Im Protokoll steht beim Start die Zeile „Dienstplan-Karte wird unter … bereitgestellt“.
+Im Protokoll steht beim Start „Dienstplan-Karte wird unter … bereitgestellt“ und beim ersten Mal „Dienstplan-Karte als Dashboard-Ressource eingetragen“. Wird die letzte Einrichtung entfernt, verschwindet auch die Ressource wieder.
 
 ## Sensoren
 
@@ -152,6 +153,7 @@ data:
 ```
 python -m pytest tests -q          # Dienste, Stunden, iCal
 python tests/check_manager.py      # Manager/Abgleich mit Home-Assistant-Stubs
+python tests/check_setup.py        # Einrichtung: Karte ausliefern, Dashboard-Ressource
 node tests/card.test.js            # Karte mit Mini-DOM
 ```
 

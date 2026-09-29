@@ -3,11 +3,11 @@
   "name": "Dienstplan",
   "codeowners": [],
   "config_flow": true,
-  "dependencies": ["http", "frontend", "websocket_api", "calendar"],
+  "dependencies": ["http", "frontend", "lovelace", "websocket_api", "calendar"],
   "documentation": "https://github.com/patrickbrundiers-dev/Arbeitskalender",
   "integration_type": "service",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/patrickbrundiers-dev/Arbeitskalender/issues",
   "requirements": [],
-  "version": "0.3.0"
+  "version": "0.3.1"
 }

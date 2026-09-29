@@ -36,4 +36,5 @@ jobs:
       - run: pip install pytest
       - run: python -m pytest tests -q
       - run: python tests/check_manager.py
+      - run: python tests/check_setup.py
       - run: node tests/card.test.js
