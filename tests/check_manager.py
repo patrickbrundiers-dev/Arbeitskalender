@@ -313,13 +313,13 @@ assert all("2026-09-30" not in e.description for e in remote.events) and "2026-0
 run(m.async_set_days({D("2026-10-01"): "X"}))
 assert all("2026-10-01" not in e.description for e in remote.events) and "2026-10-01" not in m.synced
 
-# 5) Ziel-Kalender ohne Löschen: neuer Termin wird angelegt, Hinweis erscheint
+# 5) Ziel-Kalender ohne Löschen: Änderung bleibt offen, damit keine Duplikate entstehen
 hass, remote, m = make(can_delete=False)
 run(m.async_set_days({D("2026-09-29"): "F1"}))
 assert not NOTIFICATIONS
 run(m.async_set_days({D("2026-09-29"): "S1"}))
-assert len(remote.events) == 2 and NOTIFICATIONS and "29.09.2026 (F1)" in NOTIFICATIONS[0][1], NOTIFICATIONS
-assert m.synced["2026-09-29"].startswith("S1|")
+assert len(remote.events) == 1 and NOTIFICATIONS and "29.09.2026 (F1)" in NOTIFICATIONS[0][1], NOTIFICATIONS
+assert m.synced["2026-09-29"].startswith("F1|")
 
 # 6) Fehler beim Anlegen: nicht als übertragen markiert, sync wiederholt den Versuch
 hass, remote, m = make()
