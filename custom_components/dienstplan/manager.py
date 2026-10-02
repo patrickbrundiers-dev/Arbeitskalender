@@ -29,6 +29,7 @@ from .const import (
     FEED_DAYS_AHEAD,
     FEED_DAYS_BACK,
     STORAGE_RETENTION_DAYS,
+    STORAGE_RETENTION_DAYS,
     STORAGE_VERSION,
     SYNC_DAYS_BACK,
 )
@@ -326,7 +327,7 @@ class DienstplanManager:
         if entity is None or not (entity.supported_features & CalendarEntityFeature.DELETE_EVENT):
             return False
         tz = dt_util.get_default_time_zone()
-        start = datetime.combine(dt_util.now().date() - timedelta(days=FEED_DAYS_BACK), time.min, tzinfo=tz)
+        start = datetime.combine(dt_util.now().date() - timedelta(days=STORAGE_RETENTION_DAYS), time.min, tzinfo=tz)
         end = datetime.combine(dt_util.now().date() + timedelta(days=FEED_DAYS_AHEAD), time.min, tzinfo=tz)
         prefix = f"[dienstplan:{self.entry.entry_id}:"
         try:
