@@ -169,6 +169,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DienstplanConfigEntry) -
     """Eintrag einrichten."""
     manager = DienstplanManager(hass, entry)
     await manager.async_load()
+    await manager.async_prune_storage()
     entry.runtime_data = manager
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
