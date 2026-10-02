@@ -28,6 +28,7 @@ from .const import (
     EVENT_LOOKAHEAD_DAYS,
     FEED_DAYS_AHEAD,
     FEED_DAYS_BACK,
+    STORAGE_RETENTION_DAYS,
     STORAGE_VERSION,
     SYNC_DAYS_BACK,
 )
@@ -123,7 +124,7 @@ class DienstplanManager:
 
     async def async_prune_storage(self) -> None:
         """Begrenzt alte aktive Diensttage auf den Feed-Zeitraum."""
-        cutoff = dt_util.now().date() - timedelta(days=FEED_DAYS_BACK)
+        cutoff = dt_util.now().date() - timedelta(days=STORAGE_RETENTION_DAYS)
         changed = False
         for key in list(self.days):
             try:
