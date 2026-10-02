@@ -128,11 +128,11 @@ from dienstplan.manager import DienstplanManager  # noqa: E402
 class RemoteCal:
     """Fake Ziel-Kalender."""
 
-    def __init__(self, can_delete=True):
+    def __init__(self, can_delete=True, can_update=False):
         self.events = []
         self.supported_features = CalendarEntityFeature.CREATE_EVENT | (
             CalendarEntityFeature.DELETE_EVENT if can_delete else 0
-        )
+        ) | (CalendarEntityFeature.UPDATE_EVENT if can_update else 0)
         self.n = 0
 
     async def async_get_events(self, hass, start, end):
@@ -140,6 +140,16 @@ class RemoteCal:
 
     async def async_delete_event(self, uid):
         self.events = [e for e in self.events if e.uid != uid]
+
+    async def async_update_event(self, uid, event):
+        for item in self.events:
+            if item.uid == uid:
+                item.start = event["start"]
+                item.end = event["end"]
+                item.summary = event["summary"]
+                item.description = event["description"]
+                return
+        raise HomeAssistantError("event not found")
 
 
 class Component:
@@ -207,7 +217,11 @@ def make(can_delete=True, sync="calendar.ziel", **kw):
     Store.DB.clear()
     NOTIFICATIONS.clear()
     URL_MODE["available"] = True
-    remotes = {"calendar.ziel": RemoteCal(can_delete), "calendar.ziel2": RemoteCal(can_delete)}
+    remotes = {
+        "calendar.ziel": RemoteCal(can_delete),
+        "calendar.ziel2": RemoteCal(can_delete),
+        "calendar.update": RemoteCal(can_delete, can_update=True),
+    }
     hass = Hass(remotes)
     mgr = DienstplanManager(hass, Entry(sync=sync, **kw))
     run(mgr.async_load())
@@ -279,6 +293,19 @@ assert n_after_full == 3, "vollständiger Abgleich ohne Änderungen erzeugt nich
 run(m.async_set_days({D("2026-09-29"): "S1"}))
 assert [e.summary for e in remote.events if "2026-09-29" in e.description] == ["Spätdienst 1"]
 assert len(remote.events) == 3 and m.synced["2026-09-29"].startswith("S1|") and not NOTIFICATIONS
+
+# 3b) Ziel-Kalender mit UPDATE_EVENT ändert den bestehenden Termin ohne Delete/Create
+hass, remote, m = make()
+update_remote = hass.data["calendar"].get_entity("calendar.update")
+m.entry.data[CONF_SYNC_CALENDAR] = "calendar.update"
+run(m.async_sync())
+run(m.async_set_days({D("2026-09-29"): "F1"}))
+created_uid = m.synced_uids["2026-09-29"]
+calls_before = len(hass.services.calls)
+run(m.async_set_days({D("2026-09-29"): "S1"}))
+assert len(hass.services.calls) == calls_before, "UPDATE_EVENT darf keinen neuen Termin anlegen"
+assert m.synced_uids["2026-09-29"] == created_uid
+assert len(update_remote.events) == 1 and update_remote.events[0].summary == "Spätdienst 1"
 
 # 4) Löschen / frei entfernt den Termin
 run(m.async_set_days({D("2026-09-30"): ""}))
