@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - custom_components/dienstplan/manifest.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read integration version
+        id: version
+        shell: bash
+        run: |
+          version="$(python - <<'PY'
+          import json
+          with open("custom_components/dienstplan/manifest.json", encoding="utf-8") as f:
+              print(json.load(f)["version"])
+          PY
+          )"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists."
+            exit 0
+          fi
+          gh release create "v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "Dienstplan v$VERSION" \
+            --generate-notes
