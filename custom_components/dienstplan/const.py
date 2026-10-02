@@ -9,7 +9,8 @@ CONF_SYNC_CALENDAR = "sync_calendar"
 CONF_WEEKLY_HOURS = "weekly_hours"
 CONF_VACATION_DAYS = "vacation_days"
 
-STORAGE_VERSION = 2
+STORAGE_VERSION = 1
+STORAGE_RETENTION_DAYS = 730
 
 CARD_URL = f"/{DOMAIN}_static/dienstplan-card.js"
 
