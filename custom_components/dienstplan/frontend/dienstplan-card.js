@@ -43,7 +43,7 @@
   const DOMAIN = "dienstplan";
   // Muss zur Version der Integration passen (const.py); die Integration meldet ihre Version bei jedem Laden
   // mit, und bei Abweichung zeigt die Karte einen Hinweis samt Knopf zum Neuladen.
-  const CARD_VERSION = "0.4.1";
+  const CARD_VERSION = "0.5.0";
   const MONTHS = [
     "Januar", "Februar", "März", "April", "Mai", "Juni",
     "Juli", "August", "September", "Oktober", "November", "Dezember",
