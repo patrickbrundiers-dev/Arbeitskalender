@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - custom_components/dienstplan/manifest.json
+      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:
