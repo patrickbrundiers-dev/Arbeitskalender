@@ -78,7 +78,7 @@ holidays: calendar.deutschland    # optional: Feiertagskalender
 2. **Dashboard-Ressource:** die Integration trägt die Karte beim Start selbst ein (*Einstellungen → Dashboards → ⋮ → Ressourcen*, nur im Speichermodus, das ist der Standard). Das Dashboard lädt sie dann bei jedem Öffnen.
 3. **Startseite:** wie bisher, greift aber erst, wenn die gemerkte Startseite erneuert ist.
 
-Die Adresse der Karte enthält die Version **und einen Fingerabdruck der Datei**, jede Änderung wird also garantiert neu geladen.
+Die Adresse der Karte enthält die Version **und einen Fingerabdruck der Datei**, jede Änderung wird also garantiert neu geladen. Seit 0.5.0 werden Version von Integration, Manifest und Frontend gemeinsam gepflegt.
 
 **Wenn die Karte trotzdem fehlt:**
 
@@ -222,8 +222,9 @@ Unter *Konfigurieren* einen Kalender bei *Zusätzlich in diesen Kalender eintrag
 
 - Wird ein Tag geändert oder gelöscht, entfernt die Integration den alten Termin **nur, wenn der Ziel-Kalender Löschen unterstützt** (z. B. Google, lokaler Kalender) und der Termin die Kennung trägt. Sonst erscheint eine Benachrichtigung mit den Tagen, die manuell zu löschen sind. Termine ohne Kennung werden nie angefasst.
 - Ändern sich Name oder Uhrzeit eines Dienstes in den Einstellungen, werden die betroffenen Tage (ab 14 Tage zurück) automatisch neu übertragen.
-- Wechselst du den Ziel-Kalender, wird alles neu dorthin übertragen. Die Termine im alten Kalender bleiben bestehen.
-- Schlägt das Anlegen fehl, wird der Tag nicht als übertragen markiert. Der Service *Abgleichen* wiederholt den Versuch.
+- Wechselst du den Ziel-Kalender, werden die vom Dienstplan markierten Termine im alten Kalender zuerst entfernt und danach neu in den neuen Kalender übertragen. Unterstützt der alte Kalender kein Löschen, wird der Wechsel nicht halb ausgeführt und eine Benachrichtigung angezeigt.
+- Schlägt das Anlegen oder Löschen fehl, bleibt der betreffende Schritt offen. Der nächste Abgleich wiederholt ihn; parallele Abgleiche werden intern serialisiert.
+- Alte Diensttage werden nach 730 Tagen aus dem aktiven Speicher entfernt. Die aktuellen und künftigen Tage bleiben vollständig erhalten.
 
 ## Services
 
