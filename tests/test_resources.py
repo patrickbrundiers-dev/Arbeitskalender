@@ -73,6 +73,16 @@ def test_idempotent_and_updates_version():
     assert [i["url"] for i in col.items] == [PATH + "?v=2"], "kein zweiter Eintrag"
 
 
+def test_cleans_duplicate_old_versions():
+    col = FakeStorage(items=[
+        {"id": "old", "type": "module", "url": PATH + "?v=0.5.0-old"},
+        {"id": "current", "type": "module", "url": PATH + "?v=0.6.1-new"},
+        {"id": "old2", "type": "module", "url": PATH + "?v=0.4.0-old"},
+    ])
+    assert run(res.async_ensure_resource(col, PATH, PATH + "?v=0.6.1-new")) == res.UPDATED
+    assert [i["url"] for i in col.items] == [PATH + "?v=0.6.1-new"]
+
+
 def test_leaves_foreign_resources_alone():
     other = {"id": "o", "type": "module", "url": "/hacsfiles/other-card/other-card.js"}
     col = FakeStorage(items=[other])
