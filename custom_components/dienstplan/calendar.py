@@ -54,7 +54,7 @@ class DienstplanCalendar(CalendarEntity):
 
     _attr_has_entity_name = True
     _attr_name = "Dienstplan"
-    _attr_should_poll = True  # Beginn/Ende eines Dienstes ändert den Zustand (an/aus)
+    _attr_should_poll = False
     # Der Link enthält den geheimen Token: nicht in der Datenbank/im Verlauf speichern
     _unrecorded_attributes = frozenset({"ical_url"})
 
