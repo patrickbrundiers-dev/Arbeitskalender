@@ -400,11 +400,8 @@ class DienstplanManager:
                     lines.append("Termine konnten nicht angelegt werden: " + ", ".join(failed))
                 persistent_notification.async_create(
                     self.hass,
-                    "
-
-".join(lines) + "
-
-Der nächste Dienstplan-Abgleich wiederholt fehlgeschlagene Schritte.",
+                    "\n\n".join(lines)
+                    + "\n\nDer nächste Dienstplan-Abgleich wiederholt fehlgeschlagene Schritte.",
                     title=f"Dienstplan {self.entry.title}",
                     notification_id=f"{DOMAIN}_{self.entry.entry_id}_sync",
                 )
