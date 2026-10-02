@@ -332,7 +332,7 @@ assert len(remote.events) == 3, "alte F1-Termine wurden gelöscht, neue angelegt
 run(m_new.async_sync())
 assert len(hass.services.calls) == 2, "danach stabil"
 
-# 10) Wechsel des Ziel-Kalenders überträgt alles neu (alter Kalender bleibt unberührt)
+# 10) Wechsel des Ziel-Kalenders bereinigt den alten Kalender und überträgt alles neu
 hass, remote, m = make()
 run(m.async_set_days({day(1): "F1", day(2): "S1"}))
 hass.services.calls.clear()
@@ -340,10 +340,13 @@ m_new = reopen(hass, sync="calendar.ziel2")
 run(m_new.async_sync())
 assert [c["entity_id"] for c in hass.services.calls] == ["calendar.ziel2", "calendar.ziel2"]
 assert m_new.synced_target == "calendar.ziel2" and len(remote.events) == 2
-# Ziel entfernt: nichts passiert, Merker bleibt
+assert all(e.description and "[dienstplan:e1:" not in e.description for e in remote.events) is False
+assert all(c["entity_id"] == "calendar.ziel2" for c in hass.services.calls)
+# Ziel entfernt: eigener alter Kalender wird bereinigt und der Zustand wird deaktiviert
 m_none = reopen(hass, sync="")
 run(m_none.async_sync())
-assert m_none.synced_target == "calendar.ziel2"
+assert m_none.synced_target is None
+assert len(remote.events) == 0
 
 # 11) Zeitfenster: ältere Tage nur bei ausdrücklicher Änderung
 hass, remote, m = make()
@@ -389,5 +392,14 @@ start, shift = m.next_work_start()
 assert shift.code == "N1" and start.date() == day(1) and start.hour == 21
 run(m.async_set_days({day(1): "X"}))
 assert m.next_work_start()[1].code == "S1", "frei/Urlaub zählen nicht"
+
+
+# 15) Storage-Aufräumen entfernt nur sehr alte Einträge
+hass, remote, m = make(sync="")
+m.days[(TODAY - timedelta(days=800)).isoformat()] = "F1"
+m.days[(TODAY - timedelta(days=100)).isoformat()] = "F1"
+run(m.async_prune_storage())
+assert (TODAY - timedelta(days=800)).isoformat() not in m.days
+assert (TODAY - timedelta(days=100)).isoformat() in m.days
 
 print("Manager: alle Prüfungen bestanden")
