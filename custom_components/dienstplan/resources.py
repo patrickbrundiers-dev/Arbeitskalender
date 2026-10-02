@@ -1,6 +1,6 @@
 """Karte als Dashboard-Ressource eintragen (best effort, ohne Home-Assistant-Importe).
 
-Die Karte wird zusätzlich zu ``add_extra_js_url`` als Ressource des Dashboards
+Die Karte wird zusätzlich zu add_extra_js_url als Ressource des Dashboards
 eingetragen. Ressourcen lädt das Dashboard bei jedem Öffnen selbst; die Karte
 hängt dadurch nicht davon ab, ob die Seite vor dem Start der Integration geladen
 wurde. Funktioniert nur, wenn die Ressourcen im Speichermodus laufen (Standard).
@@ -18,7 +18,7 @@ UNCHANGED = "unchanged"
 
 
 def _base(url: Any) -> str:
-    """URL ohne Query-Teil (``?v=…``)."""
+    """URL ohne Query-Teil."""
     return str(url or "").split("?", 1)[0]
 
 
@@ -35,11 +35,12 @@ async def _ensure_loaded(resources: Any) -> None:
 
 
 def _ours(resources: Any, path: str) -> list[dict]:
+    """Alle von uns verwalteten Ressourcen finden, inklusive alter Versionen."""
     return [item for item in resources.async_items() if _base(item.get("url")) == path]
 
 
 async def async_ensure_resource(resources: Any, path: str, url: str) -> str:
-    """Ressource anlegen oder auf die aktuelle URL (mit Version) bringen."""
+    """Ressource anlegen, aktualisieren und alte Duplikate entfernen."""
     if not _can(resources, "async_items", "async_create_item", "async_update_item"):
         return UNSUPPORTED
     await _ensure_loaded(resources)
@@ -47,10 +48,19 @@ async def async_ensure_resource(resources: Any, path: str, url: str) -> str:
     if not ours:
         await resources.async_create_item({"res_type": "module", "url": url})
         return CREATED
-    if ours[0].get("url") == url:
-        return UNCHANGED
-    await resources.async_update_item(ours[0]["id"], {"url": url})
-    return UPDATED
+
+    changed = ours[0].get("url") != url
+    if changed:
+        await resources.async_update_item(ours[0]["id"], {"url": url})
+
+    # Alte Versionen können bereits doppelte Einträge hinterlassen haben.
+    delete = getattr(resources, "async_delete_item", None)
+    if callable(delete) and len(ours) > 1:
+        for item in ours[1:]:
+            await delete(item["id"])
+        changed = True
+
+    return UPDATED if changed else UNCHANGED
 
 
 async def async_remove_resource(resources: Any, path: str) -> int:
