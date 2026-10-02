@@ -78,7 +78,7 @@ holidays: calendar.deutschland    # optional: Feiertagskalender
 2. **Dashboard-Ressource:** die Integration trägt die Karte beim Start selbst ein (*Einstellungen → Dashboards → ⋮ → Ressourcen*, nur im Speichermodus, das ist der Standard). Das Dashboard lädt sie dann bei jedem Öffnen.
 3. **Startseite:** wie bisher, greift aber erst, wenn die gemerkte Startseite erneuert ist.
 
-Die Adresse der Karte enthält die Version **und einen Fingerabdruck der Datei**, jede Änderung wird also garantiert neu geladen.
+Die Adresse der Karte enthält die Version **und einen Fingerabdruck der Datei**, jede Änderung wird also garantiert neu geladen. Seit 0.6.0 werden Version von Integration, Manifest und Frontend gemeinsam gepflegt.
 
 **Wenn die Karte trotzdem fehlt:**
 
@@ -218,12 +218,14 @@ Die Kalender-Entität hat das Attribut `ical_url`; die Karte kopiert es über de
 
 ## Abgleich in einen anderen Kalender
 
-Unter *Konfigurieren* einen Kalender bei *Zusätzlich in diesen Kalender eintragen* wählen. Beim Speichern werden neue und geänderte Tage dorthin übertragen (`calendar.create_event`). Jeder Termin enthält im Beschreibungstext eine Kennung `[dienstplan:…]`.
+Unter *Konfigurieren* einen Kalender bei *Zusätzlich in diesen Kalender eintragen* wählen. Beim Speichern werden neue und geänderte Tage dorthin übertragen. Wenn der Ziel-Kalender `UPDATE_EVENT` unterstützt, werden bestehende Termine direkt geändert; sonst verwendet die Integration weiterhin den sicheren Delete/Create-Fallback. Jeder Termin enthält im Beschreibungstext eine Kennung `[dienstplan:…]`.
 
 - Wird ein Tag geändert oder gelöscht, entfernt die Integration den alten Termin **nur, wenn der Ziel-Kalender Löschen unterstützt** (z. B. Google, lokaler Kalender) und der Termin die Kennung trägt. Sonst erscheint eine Benachrichtigung mit den Tagen, die manuell zu löschen sind. Termine ohne Kennung werden nie angefasst.
 - Ändern sich Name oder Uhrzeit eines Dienstes in den Einstellungen, werden die betroffenen Tage (ab 14 Tage zurück) automatisch neu übertragen.
-- Wechselst du den Ziel-Kalender, wird alles neu dorthin übertragen. Die Termine im alten Kalender bleiben bestehen.
-- Schlägt das Anlegen fehl, wird der Tag nicht als übertragen markiert. Der Service *Abgleichen* wiederholt den Versuch.
+- Wechselst du den Ziel-Kalender, werden die vom Dienstplan markierten Termine im alten Kalender zuerst entfernt und danach neu in den neuen Kalender übertragen. Unterstützt der alte Kalender kein Löschen, wird der Wechsel nicht halb ausgeführt und eine Benachrichtigung angezeigt.
+- Schlägt das Anlegen, Aktualisieren oder Löschen fehl, bleibt der betreffende Schritt offen. Der nächste Abgleich wiederholt ihn; parallele Abgleiche werden intern serialisiert.
+- Die UID eines übertragenen Zielkalender-Termins wird nach dem Anlegen gespeichert. Dadurch kann die Integration vorhandene Termine nach einem Neustart gezielter wiederfinden und aktualisieren/löschen.
+- Alte Diensttage werden nach 730 Tagen aus dem aktiven Speicher entfernt. Die aktuellen und künftigen Tage bleiben vollständig erhalten.
 
 ## Services
 
@@ -246,6 +248,12 @@ data:
   end_date: "2026-10-09"
   shift: F1
 ```
+
+## Änderungen in 0.6.0
+
+- Zielkalender-Sync kann vorhandene Termine per `UPDATE_EVENT` ändern und speichert gefundene Remote-UIDs.
+- Zielkalender-Termine werden über eine zentrale Suche mit Dienstplan-Marker erkannt; Fremdtermine bleiben unberührt.
+- Sync bleibt nach Fehlern wiederholbar und ist gegen parallele Abgleiche serialisiert.
 
 ## Bekannte Grenzen
 

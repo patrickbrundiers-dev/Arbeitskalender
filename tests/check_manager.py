@@ -128,11 +128,11 @@ from dienstplan.manager import DienstplanManager  # noqa: E402
 class RemoteCal:
     """Fake Ziel-Kalender."""
 
-    def __init__(self, can_delete=True):
+    def __init__(self, can_delete=True, can_update=False):
         self.events = []
         self.supported_features = CalendarEntityFeature.CREATE_EVENT | (
             CalendarEntityFeature.DELETE_EVENT if can_delete else 0
-        )
+        ) | (CalendarEntityFeature.UPDATE_EVENT if can_update else 0)
         self.n = 0
 
     async def async_get_events(self, hass, start, end):
@@ -140,6 +140,16 @@ class RemoteCal:
 
     async def async_delete_event(self, uid):
         self.events = [e for e in self.events if e.uid != uid]
+
+    async def async_update_event(self, uid, event):
+        for item in self.events:
+            if item.uid == uid:
+                item.start = event["start"]
+                item.end = event["end"]
+                item.summary = event["summary"]
+                item.description = event["description"]
+                return
+        raise HomeAssistantError("event not found")
 
 
 class Component:
@@ -207,7 +217,11 @@ def make(can_delete=True, sync="calendar.ziel", **kw):
     Store.DB.clear()
     NOTIFICATIONS.clear()
     URL_MODE["available"] = True
-    remotes = {"calendar.ziel": RemoteCal(can_delete), "calendar.ziel2": RemoteCal(can_delete)}
+    remotes = {
+        "calendar.ziel": RemoteCal(can_delete),
+        "calendar.ziel2": RemoteCal(can_delete),
+        "calendar.update": RemoteCal(can_delete, can_update=True),
+    }
     hass = Hass(remotes)
     mgr = DienstplanManager(hass, Entry(sync=sync, **kw))
     run(mgr.async_load())
@@ -280,19 +294,32 @@ run(m.async_set_days({D("2026-09-29"): "S1"}))
 assert [e.summary for e in remote.events if "2026-09-29" in e.description] == ["Spätdienst 1"]
 assert len(remote.events) == 3 and m.synced["2026-09-29"].startswith("S1|") and not NOTIFICATIONS
 
+# 3b) Ziel-Kalender mit UPDATE_EVENT ändert den bestehenden Termin ohne Delete/Create
+hass, remote, m = make()
+update_remote = hass.data["calendar"].get_entity("calendar.update")
+m.entry.data[CONF_SYNC_CALENDAR] = "calendar.update"
+run(m.async_sync())
+run(m.async_set_days({D("2026-09-29"): "F1"}))
+created_uid = m.synced_uids["2026-09-29"]
+calls_before = len(hass.services.calls)
+run(m.async_set_days({D("2026-09-29"): "S1"}))
+assert len(hass.services.calls) == calls_before, "UPDATE_EVENT darf keinen neuen Termin anlegen"
+assert m.synced_uids["2026-09-29"] == created_uid
+assert len(update_remote.events) == 1 and update_remote.events[0].summary == "Spätdienst 1"
+
 # 4) Löschen / frei entfernt den Termin
 run(m.async_set_days({D("2026-09-30"): ""}))
 assert all("2026-09-30" not in e.description for e in remote.events) and "2026-09-30" not in m.synced
 run(m.async_set_days({D("2026-10-01"): "X"}))
 assert all("2026-10-01" not in e.description for e in remote.events) and "2026-10-01" not in m.synced
 
-# 5) Ziel-Kalender ohne Löschen: neuer Termin wird angelegt, Hinweis erscheint
+# 5) Ziel-Kalender ohne Löschen: Änderung bleibt offen, damit keine Duplikate entstehen
 hass, remote, m = make(can_delete=False)
 run(m.async_set_days({D("2026-09-29"): "F1"}))
 assert not NOTIFICATIONS
 run(m.async_set_days({D("2026-09-29"): "S1"}))
-assert len(remote.events) == 2 and NOTIFICATIONS and "29.09.2026 (F1)" in NOTIFICATIONS[0][1], NOTIFICATIONS
-assert m.synced["2026-09-29"].startswith("S1|")
+assert len(remote.events) == 1 and NOTIFICATIONS and "29.09.2026 (F1)" in NOTIFICATIONS[0][1], NOTIFICATIONS
+assert m.synced["2026-09-29"].startswith("F1|")
 
 # 6) Fehler beim Anlegen: nicht als übertragen markiert, sync wiederholt den Versuch
 hass, remote, m = make()
@@ -332,18 +359,22 @@ assert len(remote.events) == 3, "alte F1-Termine wurden gelöscht, neue angelegt
 run(m_new.async_sync())
 assert len(hass.services.calls) == 2, "danach stabil"
 
-# 10) Wechsel des Ziel-Kalenders überträgt alles neu (alter Kalender bleibt unberührt)
+# 10) Wechsel des Ziel-Kalenders bereinigt den alten Kalender und überträgt alles neu
 hass, remote, m = make()
 run(m.async_set_days({day(1): "F1", day(2): "S1"}))
 hass.services.calls.clear()
 m_new = reopen(hass, sync="calendar.ziel2")
 run(m_new.async_sync())
 assert [c["entity_id"] for c in hass.services.calls] == ["calendar.ziel2", "calendar.ziel2"]
-assert m_new.synced_target == "calendar.ziel2" and len(remote.events) == 2
-# Ziel entfernt: nichts passiert, Merker bleibt
+assert m_new.synced_target == "calendar.ziel2"
+assert len(hass.data["calendar"].get_entity("calendar.ziel").events) == 0
+assert len(hass.data["calendar"].get_entity("calendar.ziel2").events) == 2
+assert all(c["entity_id"] == "calendar.ziel2" for c in hass.services.calls)
+# Ziel entfernt: eigener alter Kalender wird bereinigt und der Zustand wird deaktiviert
 m_none = reopen(hass, sync="")
 run(m_none.async_sync())
-assert m_none.synced_target == "calendar.ziel2"
+assert m_none.synced_target is None
+assert len(remote.events) == 0
 
 # 11) Zeitfenster: ältere Tage nur bei ausdrücklicher Änderung
 hass, remote, m = make()
@@ -389,5 +420,14 @@ start, shift = m.next_work_start()
 assert shift.code == "N1" and start.date() == day(1) and start.hour == 21
 run(m.async_set_days({day(1): "X"}))
 assert m.next_work_start()[1].code == "S1", "frei/Urlaub zählen nicht"
+
+
+# 15) Storage-Aufräumen entfernt nur sehr alte Einträge
+hass, remote, m = make(sync="")
+m.days[(TODAY - timedelta(days=800)).isoformat()] = "F1"
+m.days[(TODAY - timedelta(days=100)).isoformat()] = "F1"
+run(m.async_prune_storage())
+assert (TODAY - timedelta(days=800)).isoformat() not in m.days
+assert (TODAY - timedelta(days=100)).isoformat() in m.days
 
 print("Manager: alle Prüfungen bestanden")
