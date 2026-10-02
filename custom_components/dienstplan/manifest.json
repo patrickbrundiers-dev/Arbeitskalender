@@ -1,7 +1,7 @@
 {
   "domain": "dienstplan",
   "name": "Dienstplan",
-  "codeowners": [],
+  "codeowners": ["@patrickbrundiers-dev"],
   "config_flow": true,
   "dependencies": ["http", "frontend", "lovelace", "panel_custom", "websocket_api", "calendar"],
   "documentation": "https://github.com/patrickbrundiers-dev/Arbeitskalender",
