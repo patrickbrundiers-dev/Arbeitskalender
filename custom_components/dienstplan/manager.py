@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
+import asyncio
 import logging
 import secrets
 
@@ -65,6 +66,7 @@ class DienstplanManager:
         self.synced_target: str | None = None
         self.token: str = ""
         self._listeners: list[Callable[[], None]] = []
+        self._sync_lock = asyncio.Lock()
 
         text = self._opt(CONF_SHIFTS, DEFAULT_SHIFTS_TEXT)
         try:
@@ -118,6 +120,21 @@ class DienstplanManager:
                 "token": self.token,
             }
         )
+
+    async def async_prune_storage(self) -> None:
+        """Begrenzt alte aktive Diensttage auf den Feed-Zeitraum."""
+        cutoff = dt_util.now().date() - timedelta(days=FEED_DAYS_BACK)
+        changed = False
+        for key in list(self.days):
+            try:
+                if date.fromisoformat(key) < cutoff:
+                    self.days.pop(key, None)
+                    changed = True
+            except ValueError:
+                self.days.pop(key, None)
+                changed = True
+        if changed:
+            await self._async_save()
 
     # ------------------------------------------------------------------ Listener
 
@@ -301,77 +318,95 @@ class DienstplanManager:
 
     # ------------------------------------------------------------------ Abgleich
 
+    async def _async_delete_all_owned(self, target: str) -> bool:
+        """Entfernt alle von diesem Dienstplan erzeugten Termine aus einem Kalender."""
+        component = self.hass.data.get("calendar")
+        entity = component.get_entity(target) if component is not None else None
+        if entity is None or not (entity.supported_features & CalendarEntityFeature.DELETE_EVENT):
+            return False
+        tz = dt_util.get_default_time_zone()
+        start = datetime.combine(dt_util.now().date() - timedelta(days=FEED_DAYS_BACK), time.min, tzinfo=tz)
+        end = datetime.combine(dt_util.now().date() + timedelta(days=FEED_DAYS_AHEAD), time.min, tzinfo=tz)
+        prefix = f"[dienstplan:{self.entry.entry_id}:"
+        try:
+            events = await entity.async_get_events(self.hass, start, end)
+            for event in events:
+                if event.uid and prefix in (event.description or ""):
+                    await entity.async_delete_event(event.uid)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Dienstplan-Termine in %s konnten nicht vollständig bereinigt werden: %s", target, err)
+            return False
+        return True
+
     async def async_sync(self, only: set[str] | None = None) -> None:
-        """Termine im Ziel-Kalender anlegen bzw. ersetzen.
+        """Synchronisiert Dienstplan-Termine seriell und wiederholbar."""
+        async with self._sync_lock:
+            target = self.sync_calendar
+            old_target = self.synced_target
 
-        Es werden nur Tage angefasst, bei denen sich der Termin (Dienst, Name oder
-        Uhrzeit) seit dem letzten Abgleich geändert hat. Ohne ``only`` werden Tage
-        ab „heute minus 14 Tage“ betrachtet. Wechselt der Ziel-Kalender, wird neu
-        übertragen; Termine im alten Kalender bleiben dort bestehen.
-        """
-        target = self.sync_calendar
-        if not target:
-            return
+            if target != old_target:
+                if old_target and not await self._async_delete_all_owned(old_target):
+                    persistent_notification.async_create(
+                        self.hass,
+                        f"Der alte Dienstplan-Kalender **{old_target}** konnte nicht vollständig bereinigt werden. "
+                        "Der Zielkalender wurde noch nicht umgestellt.",
+                        title=f"Dienstplan {self.entry.title}",
+                        notification_id=f"{DOMAIN}_{self.entry.entry_id}_sync",
+                    )
+                    return
+                self.synced.clear()
+                self.synced_target = target
+                await self._async_save()
 
-        dirty = False
-        if self.synced_target != target:
-            self.synced = {}
-            self.synced_target = target
-            dirty = True
+            if not target:
+                return
 
-        if only is None:
-            cutoff = (dt_util.now().date() - timedelta(days=SYNC_DAYS_BACK)).isoformat()
-            keys = {k for k in set(self.days) | set(self.synced) if k >= cutoff}
-        else:
-            keys = set(only)
+            if only is None:
+                cutoff = (dt_util.now().date() - timedelta(days=SYNC_DAYS_BACK)).isoformat()
+                keys = {k for k in set(self.days) | set(self.synced) if k >= cutoff}
+            else:
+                keys = set(only)
 
-        manual_cleanup: list[str] = []
-        failed: list[str] = []
+            manual_cleanup: list[str] = []
+            failed: list[str] = []
+            for key in sorted(keys):
+                shift = find_shift(self.shifts, self.days.get(key))
+                desired = shift.signature() if shift is not None and shift.creates_event else None
+                current = self.synced.get(key)
+                if desired == current:
+                    continue
+                day = date.fromisoformat(key)
 
-        for key in sorted(keys):
-            shift = find_shift(self.shifts, self.days.get(key))
-            desired = shift.signature() if shift is not None and shift.creates_event else None
-            current = self.synced.get(key)
-            if desired == current:
-                continue
+                if current is not None:
+                    if not await self._async_delete_remote(target, day):
+                        manual_cleanup.append(f"{day.strftime('%d.%m.%Y')} ({current.split('|')[0]})")
+                        continue
+                    self.synced.pop(key, None)
+                    await self._async_save()
 
-            day = date.fromisoformat(key)
-            if current is not None:
-                if not await self._async_delete_remote(target, day):
-                    manual_cleanup.append(f"{day.strftime('%d.%m.%Y')} ({current.split('|')[0]})")
-                self.synced.pop(key, None)
-                dirty = True
+                if desired is not None and shift is not None:
+                    if await self._async_create_remote(target, day, shift):
+                        self.synced[key] = desired
+                        await self._async_save()
+                    else:
+                        failed.append(f"{day.strftime('%d.%m.%Y')} ({shift.code})")
 
-            if desired is not None and shift is not None:
-                if await self._async_create_remote(target, day, shift):
-                    self.synced[key] = desired
-                    dirty = True
-                else:
-                    failed.append(f"{day.strftime('%d.%m.%Y')} ({shift.code})")
+            if manual_cleanup or failed:
+                lines = []
+                if manual_cleanup:
+                    lines.append("Termine konnten nicht automatisch entfernt werden: " + ", ".join(manual_cleanup))
+                if failed:
+                    lines.append("Termine konnten nicht angelegt werden: " + ", ".join(failed))
+                persistent_notification.async_create(
+                    self.hass,
+                    "
 
-        if dirty:
-            await self._async_save()
+".join(lines) + "
 
-        if manual_cleanup or failed:
-            lines = []
-            if manual_cleanup:
-                lines.append(
-                    f"Alte Termine in **{target}** konnten nicht automatisch entfernt werden "
-                    "(Kalender unterstützt kein Löschen). Bitte manuell löschen: "
-                    + ", ".join(manual_cleanup)
+Der nächste Dienstplan-Abgleich wiederholt fehlgeschlagene Schritte.",
+                    title=f"Dienstplan {self.entry.title}",
+                    notification_id=f"{DOMAIN}_{self.entry.entry_id}_sync",
                 )
-            if failed:
-                lines.append(
-                    f"Folgende Termine konnten nicht in **{target}** angelegt werden "
-                    "(Details im Log; Service „Dienstplan: Abgleichen“ wiederholt den Versuch): "
-                    + ", ".join(failed)
-                )
-            persistent_notification.async_create(
-                self.hass,
-                "\n\n".join(lines),
-                title=f"Dienstplan {self.entry.title}",
-                notification_id=f"{DOMAIN}_{self.entry.entry_id}_sync",
-            )
 
     async def _async_create_remote(self, target: str, day: date, shift: Shift) -> bool:
         bounds = event_bounds(shift, day, dt_util.get_default_time_zone())
