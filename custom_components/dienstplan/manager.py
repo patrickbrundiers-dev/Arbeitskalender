@@ -325,92 +325,44 @@ class DienstplanManager:
 
     # ------------------------------------------------------------------ Abgleich
 
+    async def _async_get_remote_entity(self, target: str):
+        component = self.hass.data.get("calendar")
+        return component.get_entity(target) if component is not None else None
+
+    async def _async_find_owned_events(self, target: str, day: date | None = None) -> list[CalendarEvent]:
+        entity = await self._async_get_remote_entity(target)
+        if entity is None:
+            return []
+        tz = dt_util.get_default_time_zone()
+        if day is None:
+            start = datetime.combine(
+                dt_util.now().date() - timedelta(days=STORAGE_RETENTION_DAYS), time.min, tzinfo=tz
+            )
+            end = datetime.combine(
+                dt_util.now().date() + timedelta(days=FEED_DAYS_AHEAD), time.min, tzinfo=tz
+            )
+        else:
+            start = datetime.combine(day - timedelta(days=1), time.min, tzinfo=tz)
+            end = datetime.combine(day + timedelta(days=2), time.min, tzinfo=tz)
+        events = await entity.async_get_events(self.hass, start, end)
+        prefix = f"[dienstplan:{self.entry.entry_id}:"
+        return [event for event in events if prefix in (event.description or "")]
+
     async def _async_delete_all_owned(self, target: str) -> bool:
         """Entfernt alle von diesem Dienstplan erzeugten Termine aus einem Kalender."""
-        component = self.hass.data.get("calendar")
-        entity = component.get_entity(target) if component is not None else None
+        entity = await self._async_get_remote_entity(target)
         if entity is None or not (entity.supported_features & CalendarEntityFeature.DELETE_EVENT):
             return False
-        tz = dt_util.get_default_time_zone()
-        start = datetime.combine(dt_util.now().date() - timedelta(days=STORAGE_RETENTION_DAYS), time.min, tzinfo=tz)
-        end = datetime.combine(dt_util.now().date() + timedelta(days=FEED_DAYS_AHEAD), time.min, tzinfo=tz)
-        prefix = f"[dienstplan:{self.entry.entry_id}:"
         try:
-            events = await entity.async_get_events(self.hass, start, end)
-            for event in events:
-                if event.uid and prefix in (event.description or ""):
+            for event in await self._async_find_owned_events(target):
+                if event.uid:
                     await entity.async_delete_event(event.uid)
         except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Dienstplan-Termine in %s konnten nicht vollständig bereinigt werden: %s", target, err)
+            _LOGGER.warning(
+                "Dienstplan-Termine in %s konnten nicht vollständig bereinigt werden: %s", target, err
+            )
             return False
         return True
-
-    async def async_sync(self, only: set[str] | None = None) -> None:
-        """Synchronisiert Dienstplan-Termine seriell und wiederholbar."""
-        async with self._sync_lock:
-            target = self.sync_calendar
-            old_target = self.synced_target
-
-            if target != old_target:
-                if old_target and not await self._async_delete_all_owned(old_target):
-                    persistent_notification.async_create(
-                        self.hass,
-                        f"Der alte Dienstplan-Kalender **{old_target}** konnte nicht vollständig bereinigt werden. "
-                        "Der Zielkalender wurde noch nicht umgestellt.",
-                        title=f"Dienstplan {self.entry.title}",
-                        notification_id=f"{DOMAIN}_{self.entry.entry_id}_sync",
-                    )
-                    return
-                self.synced.clear()
-                self.synced_target = target
-                await self._async_save()
-
-            if not target:
-                return
-
-            if only is None:
-                cutoff = (dt_util.now().date() - timedelta(days=SYNC_DAYS_BACK)).isoformat()
-                keys = {k for k in set(self.days) | set(self.synced) if k >= cutoff}
-            else:
-                keys = set(only)
-
-            manual_cleanup: list[str] = []
-            failed: list[str] = []
-            for key in sorted(keys):
-                shift = find_shift(self.shifts, self.days.get(key))
-                desired = shift.signature() if shift is not None and shift.creates_event else None
-                current = self.synced.get(key)
-                if desired == current:
-                    continue
-                day = date.fromisoformat(key)
-
-                if current is not None:
-                    if not await self._async_delete_remote(target, day):
-                        manual_cleanup.append(f"{day.strftime('%d.%m.%Y')} ({current.split('|')[0]})")
-                        continue
-                    self.synced.pop(key, None)
-                    await self._async_save()
-
-                if desired is not None and shift is not None:
-                    if await self._async_create_remote(target, day, shift):
-                        self.synced[key] = desired
-                        await self._async_save()
-                    else:
-                        failed.append(f"{day.strftime('%d.%m.%Y')} ({shift.code})")
-
-            if manual_cleanup or failed:
-                lines = []
-                if manual_cleanup:
-                    lines.append("Termine konnten nicht automatisch entfernt werden: " + ", ".join(manual_cleanup))
-                if failed:
-                    lines.append("Termine konnten nicht angelegt werden: " + ", ".join(failed))
-                persistent_notification.async_create(
-                    self.hass,
-                    "\n\n".join(lines)
-                    + "\n\nDer nächste Dienstplan-Abgleich wiederholt fehlgeschlagene Schritte.",
-                    title=f"Dienstplan {self.entry.title}",
-                    notification_id=f"{DOMAIN}_{self.entry.entry_id}_sync",
-                )
 
     async def _async_create_remote(self, target: str, day: date, shift: Shift) -> bool:
         bounds = event_bounds(shift, day, dt_util.get_default_time_zone())
