@@ -339,8 +339,9 @@ hass.services.calls.clear()
 m_new = reopen(hass, sync="calendar.ziel2")
 run(m_new.async_sync())
 assert [c["entity_id"] for c in hass.services.calls] == ["calendar.ziel2", "calendar.ziel2"]
-assert m_new.synced_target == "calendar.ziel2" and len(remote.events) == 2
-assert all(e.description and "[dienstplan:e1:" not in e.description for e in remote.events) is False
+assert m_new.synced_target == "calendar.ziel2"
+assert len(hass.data["calendar"].get_entity("calendar.ziel").events) == 0
+assert len(hass.data["calendar"].get_entity("calendar.ziel2").events) == 2
 assert all(c["entity_id"] == "calendar.ziel2" for c in hass.services.calls)
 # Ziel entfernt: eigener alter Kalender wird bereinigt und der Zustand wird deaktiviert
 m_none = reopen(hass, sync="")
