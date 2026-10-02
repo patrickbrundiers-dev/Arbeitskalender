@@ -65,6 +65,7 @@ class DienstplanManager:
         self.days: dict[str, str] = {}
         self.synced: dict[str, str] = {}  # Datum -> Signatur des übertragenen Termins
         self.synced_target: str | None = None
+        self.synced_uids: dict[str, str] = {}
         self.token: str = ""
         self._listeners: list[Callable[[], None]] = []
         self._sync_lock = asyncio.Lock()
@@ -106,6 +107,7 @@ class DienstplanManager:
         data = await self.store.async_load() or {}
         self.days = {k: v for k, v in data.get("days", {}).items() if isinstance(v, str) and v}
         self.synced = {k: v for k, v in data.get("synced", {}).items() if isinstance(v, str) and v}
+        self.synced_uids = {k: v for k, v in data.get("synced_uids", {}).items() if isinstance(v, str) and v}
         self.synced_target = data.get("synced_target") or None
         self.token = data.get("token") or ""
         if not self.token:
@@ -118,6 +120,7 @@ class DienstplanManager:
                 "days": self.days,
                 "synced": self.synced,
                 "synced_target": self.synced_target,
+                "synced_uids": self.synced_uids,
                 "token": self.token,
             }
         )
@@ -166,6 +169,9 @@ class DienstplanManager:
 
     def _marker(self, day: date) -> str:
         return f"[dienstplan:{self.entry.entry_id}:{day.isoformat()}]"
+
+    def _remote_uid(self, day: date) -> str:
+        return f"{self.entry.entry_id}-{day.isoformat()}@dienstplan"
 
     def _event_for(self, day: date, shift: Shift) -> CalendarEvent | None:
         bounds = event_bounds(shift, day, dt_util.get_default_time_zone())
