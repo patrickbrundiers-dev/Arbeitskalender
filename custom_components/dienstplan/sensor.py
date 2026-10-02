@@ -44,7 +44,7 @@ class DienstplanSensor(SensorEntity):
     """Basis: hängt am Gerät der Person und aktualisiert sich bei Änderungen."""
 
     _attr_has_entity_name = True
-    _attr_should_poll = True  # Tageswechsel, Dienstbeginn
+    _attr_should_poll = False
 
     def __init__(self, entry: DienstplanConfigEntry, key: str) -> None:
         self.manager: DienstplanManager = entry.runtime_data
